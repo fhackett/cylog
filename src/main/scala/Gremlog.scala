@@ -105,26 +105,6 @@ object Solver extends StrictLogging {
     })
     if( good ) Some(program) else None
   }
-
-  /*def findLiterals(program : Seq[Fact]) : Seq[Value] =
-    (for(fact <- program;
-        v <- fact.head ++ fact.conditions.flatMap(_.params) if( v match {
-          case IntValue(_)|StringValue(_) => true
-          case NameValue(_) => false
-        }))
-      yield v).distinct*/
-
-  /*def accumulateBindings(program : Seq[Fact]) : Seq[Map[String,Int]] =
-    program.map({
-      case Fact(name, head, conditions) =>
-        conditions.foldLeft(Map.empty)((m, rel) => {
-          rel.params.foldLeft(m)((m, v) => v match {
-            case IntValue(_) => m
-            case StringValue(_) => m
-            case NameValue(n) => m.updated(n, m.getOrElse(n, 0)+1)
-          })
-        })
-    })*/
   
   import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.{GraphTraversalSource,__,GraphTraversal};
   import org.apache.tinkerpop.gremlin.process.traversal._;
@@ -132,16 +112,7 @@ object Solver extends StrictLogging {
   import org.apache.tinkerpop.gremlin.structure.Vertex;
   import org.apache.tinkerpop.gremlin.structure.io.IoCore;
 
-  def generateTraversal(program : Seq[Fact], g : GraphTraversalSource) : Option[GraphTraversal[_,_]] = {
-
-    def genMatchCase(c : Int, name : String, conds : Seq[Value]) : Seq[GraphTraversal[_ <: Vertex,_]] = {
-      val first : Seq[GraphTraversal[_ <: Vertex,_]] = conds.zipWithIndex.map((tpl : (Value,Int)) => tpl match {
-        case (IntValue(v), i) => __.as(s"$$anon$c").has(i.toString, v)
-        case (StringValue(v), i) => __.as(s"$$anon$c").has(i.toString, v)
-        case (NameValue(v), i) => __.as(s"$$anon$c").has(i.toString).values(i.toString).as(v)
-      })
-      first ++ Seq(__.as(s"$$anon$c").hasLabel(name))
-    }
+  def generateTraversal(program : Seq[Fact], g : GraphTraversalSource) : Option[GraphTraversal[Vertex,Vertex]] = {
 
     def genProps[A](src : GraphTraversal[A,Vertex], head : Seq[Value]) : GraphTraversal[A,Vertex] =
       head.zipWithIndex.foldLeft(src)((t, hd) => hd match {
@@ -153,60 +124,6 @@ object Solver extends StrictLogging {
     def genInstCase[A,B](src : GraphTraversal[A,B], name : String, head : Seq[Value]) : GraphTraversal[A,Vertex] =
       genProps(src.addV(name), head)
 
-    //val literals = findLiterals(program)
-    //val (bases, derived) = program.partition(fact => fact.conditions.isEmpty)
-
-    /*val setupLiterals : GraphTraversal[Vertex,Vertex] =
-      g.V().sideEffect(t => println(s"t $t")).or(
-        literals.map({
-          case IntValue(v) =>
-            __.coalesce(
-              __.has("$int", v),
-              __.addV("$intLiteral").property("$int", v)).as(s"$$intLiteral$v")
-          case StringValue(v) =>
-            __.coalesce(
-              __.has("str", v),
-              __.addV("$strLiteral").property("$str", v)).as(s"$$strLiteral$v")
-          case NameValue(_) => ???
-        }) :_*)
-    Some(setupLiterals)*/
-    /*val setupBases : GraphTraversal[Vertex,Vertex] =
-
-
-    val setup : GraphTraversal[Vertex,Vertex] =
-      if( bases.isEmpty ) {
-        g.V()
-      } else {
-        val s = genProps(g.addV(bases.head.name), bases.head.head)
-        bases.tail.foldLeft(s)((t, fact) => genInstCase(t, fact.name, fact.head)).V()
-      }
-    Some(setup.sideEffect(t => println(t)).repeat(
-      __.or(
-        derived.map(fact => {
-          val search : GraphTraversal[Vertex,java.util.Map[String,Any]] =
-            __.`match`[Vertex,Any](
-              fact.conditions.zipWithIndex.flatMap({
-                case (cond, i) => genMatchCase(i, cond.name, cond.params)
-              }) ++ Seq(
-                __.not(__.or(genMatchCase(fact.conditions.length, fact.name, fact.head):_*))
-              ):_*)
-          genInstCase(search, fact.name, fact.head)
-        }) :_*
-      )
-    ).times(2).emit)*/
-    /*val setupBases =
-      g.V().union(
-        bases.zipWithIndex.map({
-          case Fact(name, head, conditions) =>
-
-        }) ++ Seq(__.identity()) :_*)
-      if( !bases.isEmpty ) {
-        val hd = bases.head.head.zipWithIndex.foldLeft[GraphTraversal[Vertex,Vertex]](g.addV(fact.name))((t, v) => v match {
-          case (IntValue(v), i)
-        })
-      } else {
-        g.V()
-      }*/
     Some(g.V().hasLabel("$$$DUMMY$$$").fold().coalesce(__.unfold(), __.addV("$$$DUMMY$$$")).repeat(
       __.union(
         program.map(fact => {
@@ -274,15 +191,7 @@ object Solver extends StrictLogging {
               }
             }
             genInstCase(
-              /*{
-                val toSelect = boundVars.keys.map(n => s"${n}0").toSeq
-                val filtered = */eqChecks.filter(findHead.fold().not(__.unfold()))
-                /*if( toSelect.length < 2 ) {
-                  filtered
-                } else {
-                  filtered.select(toSelect.head, toSelect.tail.head, toSelect.tail.tail :_*)
-                }
-              }*/,
+              eqChecks.filter(findHead.fold().not(__.unfold())),
               fact.name,
               fact.head)
           }
@@ -291,20 +200,9 @@ object Solver extends StrictLogging {
     ).emit)
   }
 
-  def solve(program : Seq[Fact], graph : GraphTraversalSource) : Option[Iterator[Any]] =
+  def solve(program : Seq[Fact], graph : GraphTraversalSource) : Option[GraphTraversal[Vertex,java.util.Map[Object,Object]]] =
     for(checked <- checkAllHeadsMentioned(program);
         traversal <- generateTraversal(checked, graph))
-      yield {
-        import scala.collection.JavaConverters
-        println(traversal.explain)
-        println(traversal.toList())
-        /*println(graph.V().`match`(
-          __.as("x").label().as("label"),
-          __.as("x").properties().as("properties")
-        ).select("x", "label", "properties").toList())*/
-        println(graph.V().valueMap(true).toList)
-        JavaConverters.asScalaIterator(traversal)
-      }
-
+      yield traversal.dedup().valueMap(true)
 }
 
