@@ -1,0 +1,6 @@
+
+parent("bobbie", 2).
+parent("sue", 2).
+
+test(A) :- parent("bobbie",A), parent("sue",A).
+

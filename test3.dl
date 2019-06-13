@@ -1,0 +1,9 @@
+
+parent("maggie", "bobbie").
+parent("bobbie", "marie").
+parent("sue", "marie").
+parent("marie", "bobe").
+
+ancestor(A,B) :- parent(A,B).
+ancestor(A,C) :- parent(A,B), ancestor(B,C).
+
