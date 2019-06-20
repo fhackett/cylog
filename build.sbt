@@ -1,4 +1,4 @@
-scalaVersion := "2.12.8"
+scalaVersion := "2.13.0"
 
 name := "gremlog"
 organization := "ca.uwaterloo"
@@ -14,5 +14,5 @@ libraryDependencies += "org.apache.tinkerpop" % "tinkergraph-gremlin" % "3.4.1"
 libraryDependencies += "com.typesafe.scala-logging" %% "scala-logging" % "3.9.2"
 libraryDependencies += "ch.qos.logback" % "logback-classic" % "1.2.3"
 libraryDependencies += "com.github.pathikrit" %% "better-files" % "3.8.0"
-libraryDependencies += "com.github.scopt" %% "scopt" % "4.0.0-RC2"
+//libraryDependencies += "com.github.scopt" %% "scopt" % "4.0.0-RC2"
 

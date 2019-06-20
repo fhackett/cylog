@@ -1,7 +1,7 @@
 package ca.uwaterloo.gremlog
 
 import better.files._
-import scopt.OParser
+//import scopt.OParser
 import java.io.{File => JFile}
 import com.typesafe.scalalogging.Logger
 
@@ -10,7 +10,7 @@ case class Config(
 )
 
 object Main extends App {
-  val builder = OParser.builder[Config]
+  /*val builder = OParser.builder[Config]
   val argParser = {
     import builder._
     OParser.sequence(
@@ -38,5 +38,5 @@ object Main extends App {
   results match {
     case None => sys.exit(1)
     case Some(()) => ()
-  }
+  }*/
 }
