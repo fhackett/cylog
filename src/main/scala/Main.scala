@@ -1,15 +1,31 @@
 package ca.uwaterloo.gremlog
 
-import better.files._
-//import scopt.OParser
-import java.io.{File => JFile}
-import com.typesafe.scalalogging.Logger
-
-case class Config(
-  file : File = File("."),
-)
+import java.nio.file.{Files,Paths}
+import java.nio.charset.StandardCharsets
 
 object Main extends App {
+  args match {
+    case Array(filename) => {
+      val input = try {
+        val raw = Files.readAllBytes(Paths.get(filename))
+        new String(raw, StandardCharsets.UTF_8)
+      } catch {
+        case e : java.io.IOException => {
+          println(s"Error reading file: ${e.getLocalizedMessage()}")
+          sys.exit(1)
+        }
+      }
+      val directives = Parser.tryParse(input)
+      println(directives)
+      val ir = Solver.convertToIR(directives)
+      println(ir)
+    }
+    case _ => {
+      println("Gremlog, a Datalog to Apache Gremlin compiler")
+      println("USAGE: <gremlog> FILE.dl")
+      sys.exit(1)
+    }
+  }
   /*val builder = OParser.builder[Config]
   val argParser = {
     import builder._

@@ -1,38 +1,66 @@
 package ca.uwaterloo.gremlog
 
-import better.files.File
-import com.typesafe.scalalogging.StrictLogging
 import collection.mutable.{HashSet,HashMap,ArrayBuffer,ArrayDeque}
 
-class ID
+object AST {
+  sealed abstract class Type
+  case object NumberType extends Type
+  case object SymbolType extends Type
+  case object InType extends Type
+  case object OutType extends Type
+  case object SelfType extends Type
 
-sealed abstract class Type
-case object NumberType extends Type
-case object SymbolType extends Type
-case object NodeType extends Type
+  sealed abstract class Binding
+  case class SymbolBinding(val value : String) extends Binding
+  case class NumberBinding(val value : Int) extends Binding
+  case class NameBinding(val name : String) extends Binding
+  case object WildcardBinding extends Binding
+  case object IDBinding extends Binding
 
-sealed abstract class Identifiable {
-  val id = new ID
+  sealed abstract class Condition
+  case class Relation(val name : String, val bindings : Seq[Binding]) extends Condition
+
+  sealed abstract class Directive
+  case class Fact(val name : String, val head : Seq[Binding], val conditions : Seq[Condition]) extends Directive
+  sealed abstract class Declaration extends Directive {
+    val name : String
+  }
+  case class PlainDeclaration(val name : String, val types : Seq[(String,Type)]) extends Declaration
+  case class NodeDeclaration(val name : String, val types : Seq[(String,Type)]) extends Declaration
+  case class EdgeDeclaration(val name : String, val types : Seq[(String,Type)]) extends Declaration
 }
 
-sealed abstract class Binding extends Identifiable
-case class StringBinding(val value : String) extends Binding
-case class IntBinding(val value : Int) extends Binding
-case class NameBinding(val name : String) extends Binding
-case class WildcardBinding() extends Binding
+object IR {
+  case class Block(val statements : Seq[Statement])
 
-sealed abstract class Condition extends Identifiable
-case class Relation(val name : String, val bindings : Seq[Binding]) extends Condition
+  sealed abstract class Prop
+  case class PropBind(val label : String, val bindTo : String) extends Prop
+  case class PropExists(val label : String) extends Prop
+  case class PropBound(val label : String, val boundTo : String) extends Prop
+  case class PropLiteral(val label : String, val literal : Object) extends Prop
 
-sealed abstract class Directive extends Identifiable
-case class Fact(val name : String, val head : Seq[Binding], val conditions : Seq[Condition]) extends Directive
-sealed abstract class Declaration extends Directive
-case class PlainDeclaration(val name : String, val types : Seq[(String,Type)]) extends Declaration
-case class NodeDeclaration(val name : String, val types : Seq[(String,Type)]) extends Declaration
-case class EdgeDeclaration(val name : String, val types : Seq[(String,Type)]) extends Declaration
+  sealed abstract class Rel
+  case class RelExistsOut(val label : String) extends Rel
+  case class RelExistsIn(val label : String) extends Rel
+  case class RelBindOut(val label : String, val bindTo : String) extends Rel
+  case class RelBindIn(val label : String, val bindTo : String) extends Rel
+  case class RelBoundOut(val label : String, val boundTo : String) extends Rel
+  case class RelBoundIn(val label : String, val boundTo : String) extends Rel
 
-object Parser extends StrictLogging {
+  sealed abstract class Statement
+  case class NodeQuery(val label : String, val props : Seq[Prop], val rels : Seq[Rel], val bindTo : Option[String]) extends Statement
+  case class NodeCheck(val bound : String, val label : String, val props : Seq[Prop], val rels : Seq[Rel]) extends Statement
+  case class NodeEnsure(val label : String, val props : Seq[Prop], val rels : Seq[Rel]) extends Statement
+  case class EdgeQuery(val label : String, val props : Seq[Prop], val bindLeft : Option[String], val bindRight : Option[String]) extends Statement
+  case class EdgeQueryFrom(val label : String, val props : Seq[Prop], val from : String, val bindTo : Option[String]) extends Statement
+  case class EdgeQueryTo(val label : String, val props : Seq[Prop], val to : String, val bindFrom : Option[String]) extends Statement
+  case class EdgeQueryBoth(val label : String, val props : Seq[Prop], val from : String, val to : String) extends Statement
+  case class EdgeEnsure(val label : String, val props : Seq[Prop], val from : String, val to : String) extends Statement
+}
+
+object Parser {
   import fastparse._, NoWhitespace._
+  import AST._
 
   def name [_ : P] : P[String] = P( (CharIn("a-zA-Z").! ~ (CharsWhileIn("a-zA-Z0-9").!.?).map({ case None => ""; case Some(s) => s}))
                                     .map(vs => vs._1 ++ vs._2) )
@@ -40,20 +68,21 @@ object Parser extends StrictLogging {
 
   def int [_ : P] : P[Int] = P( (CharIn("0-9").! ~ (CharsWhileIn("0-9").!.?).map({ case None => ""; case Some(s) => s}))
                                 .map(vs => Integer.parseInt(vs._1 ++ vs._2)) )
-  def intBinding [_ : P] : P[IntBinding] = P( int.map(i => IntBinding(i)) )
+  def intBinding [_ : P] : P[NumberBinding] = P( int.map(i => NumberBinding(i)) )
   def nameBinding [_ : P] : P[NameBinding] = P( name.map(NameBinding(_)) )
-  def wildcardBinding [_ : P] : P[WildcardBinding] = P( wildcard.map(_ => WildcardBinding()) )
+  def idBinding [_ : P] : P[IDBinding.type] = P( "$".!.map(_ => IDBinding) )
+  def wildcardBinding [_ : P] : P[WildcardBinding.type] = P( wildcard.map(_ => WildcardBinding) )
   def string [_ : P] : P[String] = P( ("\"" ~ ("\\\"" | (!"\"" ~ AnyChar) ).rep.! ~ "\"").map(seq => new String(seq)) )
-  def stringBinding [_ : P] : P[StringBinding] = P( string.map(str => StringBinding(str)) )
+  def stringBinding [_ : P] : P[SymbolBinding] = P( string.map(str => SymbolBinding(str)) )
 
-  def bodyBind [_ : P] : P[Binding] = P( intBinding | nameBinding | stringBinding | wildcardBinding )
-  def headBind [_ : P] : P[Binding] = P( intBinding | nameBinding | stringBinding )
+  def bodyBind [_ : P] : P[Binding] = P( intBinding | nameBinding | stringBinding | wildcardBinding | idBinding )
+  def headBind [_ : P] : P[Binding] = P( intBinding | nameBinding | stringBinding | idBinding )
 
   def ws [_ : P] = P( CharsWhileIn("\r\n\t ").? )
   def Ws [_ : P] = P( CharsWhileIn("\r\n\t ") )
 
   def tpe [_ : P] : P[Type] =
-    P( "number".!.map(_ => NumberType) | "symbol".!.map(_ => SymbolType) | "node".!.map(_ => NodeType) )
+    P( "number".!.map(_ => NumberType) | "symbol".!.map(_ => SymbolType) | "in".!.map(_ => InType) | "out".!.map(_ => OutType) )
 
   def nameType [_ : P] : P[(String,Type)] = P( name.! ~ ws ~ ":" ~ ws ~ tpe )
   def declaration [_ : P] : P[PlainDeclaration] =
@@ -84,287 +113,399 @@ object Parser extends StrictLogging {
 
   def directive [_ : P] : P[Directive] = P( fact | declaration | nodeDecl | edgeDecl )
 
-  def program[_ : P] : P[Seq[Directive]] = P( ws ~ fact.rep(sep=Ws) ~ ws ~ End )
+  def program[_ : P] : P[Seq[Directive]] = P( ws ~ directive.rep(sep=Ws) ~ ws ~ End )
 
-  def tryParse(text : String) : Option[Seq[Directive]] =
+  def tryParse(text : String) : Seq[Directive] =
     parse(text, program(_)) match {
-      case Parsed.Success(result, _) => Some(result)
+      case Parsed.Success(result, _) => result
       case f : Parsed.Failure => {
-        logger.error(f.trace().longAggregateMsg)
-        None
-      }
-    }
-
-  def tryParse(file : File) : Option[Seq[Directive]] =
-    try {
-      tryParse(file.contentAsString) match {
-        case s @ Some(_) => s
-        case None => {
-          logger.error(s"Failed to parse file $file")
-          None
-        }
-      }
-    } catch {
-      case e : java.nio.file.NoSuchFileException => {
-        logger.error(s"File not found $file")
-        None
+        println(f.trace().longAggregateMsg)
+        ???
       }
     }
 }
 
-sealed abstract class UnifyTypeV
-case class UnifyTypeVType(val tpe : Type) extends UnifyTypeV
-case class UnifyTypeVID(val id : ID) extends UnifyTypeV
+object Solver {
 
-sealed abstract class TypeConstraint
-case class UnifyIDIDType(val id1 : ID, val id2 : ID) extends TypeConstraint
-case class UnifyIDType(val id : ID, val tpe : Type) extends TypeConstraint
-case class UnifyTypeType(val tpe1 : Type, val tpe2 : Type) extends TypeConstraint
-case class UnifyTypeSeq(val s1 : Seq[UnifyTypeV], val s2 : Seq[UnifyTypeV]) extends TypeConstraint
-
-object Typer {
-  def unify(constraints : Seq[TypeConstraint]) : Map[ID, Type] = {
-    val todo = new ArrayDeque[TypeConstraint]
-    todo ++= constraints
-    val types = new HashMap[ID,Type]
-    while(!todo.isEmpty) {
-      todo.removeHead() match {
-        case UnifyTypeSeq(s1, s2) => {
-          if( s1.length != s2.length ) {
-            ??? // arity mismatch
-          }
-          todo ++= (s1 zip s2).map({
-            case (UnifyTypeVType(tpe1), UnifyTypeVType(tpe2)) => UnifyTypeType(tpe1, tpe2)
-            case (UnifyTypeVID(id), UnifyTypeVType(tpe)) => UnifyIDType(id, tpe)
-            case (UnifyTypeVType(tpe), UnifyTypeVID(id)) => UnifyIDType(id, tpe)
-            case (UnifyTypeVID(id1), UnifyTypeVID(id2)) => UnifyIDIDType(id1, id2)
-          })
-        }
-        case UnifyIDType(id, tpe) => {
-          if( types.contains(id) ) {
-            todo += UnifyTypeType(types(id), tpe)
-          } else {
-            types(id) = tpe
-          }
-        }
-        case UnifyIDIDType(id1, id2) => {
-          if( types.contains(id1) ) {
-            todo += UnifyIDType(id2, types(id1))
-          } else if( types.contains(id2) ) {
-            todo += UnifyIDType(id1, types(id2))
-          } else {
-            // only terminates if typing is solvable
-            todo += UnifyIDIDType(id1, id2)
-          }
-        }
-        case UnifyTypeType(tpe1, tpe2) => {
-          if( tpe1 != tpe2 ) {
-            ??? // type mismatch
-          }
-        }
-      }
-    }
-    types.toMap
-  }
-}
-
-object Solver extends StrictLogging {
-
-  def resolveScopes(directives : Seq[Directive]) : (Map[ID,String],Map[ID,ID],Map[ID,ID],Map[ID,Seq[ID]]) = {
-    val decls = new ArrayBuffer[Declaration]
-    val facts = new ArrayBuffer[Fact]
+  def convertToIR(directives : Seq[AST.Directive]) : Seq[IR.Block] = {
+    val decls = new ArrayBuffer[AST.Declaration]
+    val facts = new ArrayBuffer[AST.Fact]
 
     directives.foreach({
-      case d : Declaration => decls += d
-      case f : Fact => facts += f
+      case d : AST.Declaration => decls += d
+      case f : AST.Fact => facts += f
     })
 
-    val labelOf = new HashMap[ID,String]
-    val getDeclaration = new HashMap[ID,Declaration]
-    val refersTo = new HashMap[ID,ID]
-    val definedBy = new HashMap[ID,ID]
-    val declMembers = new HashMap[ID,Seq[ID]]
+    sealed abstract class RelationType
+    case object NodeRelation extends RelationType
+    case object EdgeRelation extends RelationType
+    case object PlainRelation extends RelationType
 
-    val factIDs = new HashMap[String, ID]
+    val isDefined = new HashSet[String]
+    val relationTypes = new HashMap[String,Seq[(String,AST.Type)]]
+    val relationType = new HashMap[String,RelationType]
 
-    val alreadyDeclared = new HashSet[String]
-    def makeDecl(id : ID, name : String, types : Seq[(String,Type)]) : Unit = {
-      if( alreadyDeclared(name) ) {
-        ??? // cannot declare relation twice
-      } else {
-        alreadyDeclared += name
-        labelOf(id) = name
-        val mentioned = new HashSet[String]
-        val ids = new ArrayBuffer[ID]
-        types.foreach({
-          case (fieldName, tpe) => {
-            if( mentioned(fieldName) ) {
-              ??? // relation argument names need to be unique
-            } else {
-              mentioned += fieldName
-              val fieldID = new ID
-              ids += fieldID
-              labelOf(fieldID) = fieldName
-            }
-          }
-        })
-        factIDs(name) = id
-        declMembers(id) = ids.toSeq
+    def checkUniqueNames(names : Seq[String]) : Boolean =
+      names.toSet.size == names.length
+
+    decls.foreach(decl => {
+      if( isDefined(decl.name) ) {
+        ??? // relation is declared twice
       }
-    }
-    decls.foreach(d => {
-      getDeclaration(d.id) = d
-      d match {
-        case NodeDeclaration(name, types) =>
-          makeDecl(d.id, name, Seq(("$n", NodeType)) ++ types)
-        case EdgeDeclaration(name, types) =>
-          makeDecl(d.id, name, Seq(("$n1", NodeType), ("$n2", NodeType)) ++ types)
-        case PlainDeclaration(name, types) =>
-          makeDecl(d.id, name, types)
-      }
-    })
+      isDefined += decl.name
 
-    facts.foreach(fact => fact match {
-      case Fact(name, head, conditions) => {
-        if( factIDs.contains(name) ) {
-          val headID = factIDs(name)
-          val headIDs = declMembers(headID)
-          val boundNames = new HashMap[String, ID]
-          if( headIDs.length != head.length ) {
-            ??? // arity must match between declaration and facts
+      decl match {
+        case AST.NodeDeclaration(name, types) => {
+          if( !checkUniqueNames(types.map(_._1)) ) {
+            ??? // names not unique in .decl
           }
-          definedBy(fact.id) = headID
-          (headIDs zip head).foreach({
-            case (id, binding) => {
-              definedBy(binding.id) = id
-              binding match {
-                case NameBinding(name) => {
-                  if( boundNames.contains(name) ) {
-                    ??? // can't bind the same name twice in HEAD
-                  }
-                  boundNames(name) = binding.id
-                  refersTo(binding.id) = binding.id
-                }
-                case IntBinding(_) => refersTo(binding.id) = binding.id
-                case StringBinding(_) => refersTo(binding.id) = binding.id
-                case WildcardBinding() => refersTo(binding.id) = binding.id
-              }
-            }
+          relationType(name) = NodeRelation
+          relationTypes(name) = types
+        }
+        case AST.EdgeDeclaration(name, types) => {
+          if( !checkUniqueNames(types.map(_._1)) ) {
+            ??? // names not unique in .decl
+          }
+          relationType(name) = EdgeRelation
+          types.foreach({
+            case (label, AST.InType) => ??? // edges relations can't relate to nodes
+            case (label, AST.OutType) => ??? // other than from and to (which are implicit)
+            case _ => ()
           })
-          conditions.foreach({
-            case rel @ Relation(name, bindings) => {
-              if( factIDs.contains(name) ) {
-                val sigID = factIDs(name)
-                val sigHead = declMembers(sigID)
-                if( sigHead.length != bindings.length ) {
-                  ??? // arity must match between declaration and usage
-                }
+          relationTypes(name) = types
+        }
+        case AST.PlainDeclaration(name, types) => {
+          if( !checkUniqueNames(types.map(_._1)) ) {
+            ??? // names not unique in .decl
+          }
+          relationType(name) = PlainRelation
+          relationTypes(name) = types
+        }
+      }
+    })
 
-                definedBy(rel.id) = sigID
-                (sigHead zip bindings).foreach({
-                  case (id, binding) => {
-                    definedBy(binding.id) = id
-                    binding match {
-                      case NameBinding(name) => {
-                        if( boundNames.contains(name) ) {
-                          refersTo(binding.id) = boundNames(name)
-                        } else {
-                          refersTo(binding.id) = binding.id
-                          boundNames(name) = binding.id
-                        }
+
+    def getHeadNames(head : Seq[AST.Binding]) : Seq[String] =
+      head.flatMap({
+        case AST.NumberBinding(_) => Seq.empty
+        case AST.SymbolBinding(_) => Seq.empty
+        case AST.NameBinding(name) => Seq(name)
+        case AST.WildcardBinding => ??? // wildcards invalid in head
+        case AST.IDBinding => Seq.empty
+      })
+
+    def getBoundBodyNames(body : Seq[AST.Condition]) : Seq[String] =
+      body.flatMap({
+        case AST.Relation(name, bindings) =>
+          bindings.flatMap({
+            case AST.NumberBinding(_) => Seq.empty
+            case AST.SymbolBinding(_) => Seq.empty
+            case AST.NameBinding(name) => Seq(name)
+            case AST.WildcardBinding => Seq.empty
+            case AST.IDBinding => ??? // ids invalid in body
+          })
+      }).distinct
+
+    val blocks = facts.map({
+      case AST.Fact(name, head, conditions) => {
+        if( !isDefined(name) ) {
+          ??? // fact must be declared
+        }
+        
+        val headNames = getHeadNames(head)
+        val boundBodyNames = getBoundBodyNames(conditions)
+        if( !(headNames.toSet &~ boundBodyNames.toSet).isEmpty ) {
+          ??? // all head names must be mentioned in the body
+        }
+
+        val stmts = new ArrayBuffer[IR.Statement]
+        val typeContext = new HashMap[String,AST.Type]
+        val isBound = new HashSet[String]
+
+        def handleCondition(cond : AST.Condition) : Unit = cond match {
+          case rel : AST.Relation => handleRelationCondition(rel)
+        }
+
+        def getBoundProps(bindings : Seq[(AST.Binding,(String,AST.Type))]) : Seq[IR.Prop] =
+          bindings.flatMap({
+            case (binding, (label, tpe)) =>
+              binding match {
+                case AST.NumberBinding(num) => Seq(IR.PropLiteral(label, num.asInstanceOf[Object]))
+                case AST.SymbolBinding(sym) => Seq(IR.PropLiteral(label, sym))
+                case AST.NameBinding(name) => {
+                  if( isBound(name) ) {
+                    tpe match {
+                      case AST.NumberType => Seq(IR.PropBound(label, name))
+                      case AST.SymbolType => Seq(IR.PropBound(label, name))
+                      case _ => Seq.empty
+                    }
+                  } else {
+                    tpe match {
+                      case AST.NumberType => {
+                        isBound += name
+                        Seq(IR.PropBind(label, name))
                       }
-                      case IntBinding(_) => refersTo(binding.id) = binding.id
-                      case StringBinding(_) => refersTo(binding.id) = binding.id
-                      case WildcardBinding() => refersTo(binding.id) = binding.id
+                      case AST.SymbolType => {
+                        isBound += name
+                        Seq(IR.PropBind(label, name))
+                      }
+                      case _ => Seq.empty
                     }
                   }
-                })
-              } else {
-                ??? // need to declare relations that you reference
+                }
+                case AST.WildcardBinding =>
+                  tpe match {
+                    case AST.NumberType => Seq(IR.PropExists(label))
+                    case AST.SymbolType => Seq(IR.PropExists(label))
+                    case _ => Seq.empty
+                  }
+                case AST.IDBinding => ??? // should not be allowed outside of node head
+              }
+          })
+        def getBoundRels(bindings : Seq[(AST.Binding,(String,AST.Type))]) : Seq[IR.Rel] =
+          bindings.flatMap({
+            case (binding, (label, tpe)) =>
+              binding match {
+                case AST.NumberBinding(_) => Seq.empty
+                case AST.SymbolBinding(_) => Seq.empty
+                case AST.NameBinding(name) => {
+                  if( isBound(name) ) {
+                    tpe match {
+                      case AST.NumberType => Seq.empty
+                      case AST.SymbolType => Seq.empty
+                      case AST.InType => Seq(IR.RelBoundIn(label, name))
+                      case AST.OutType => Seq(IR.RelBoundOut(label, name))
+                      case AST.SelfType => ??? // unreachable
+                    }
+                  } else {
+                    tpe match {
+                      case AST.NumberType => Seq.empty
+                      case AST.SymbolType => Seq.empty
+                      case AST.InType => {
+                        isBound += name
+                        Seq(IR.RelBindIn(label, name))
+                      }
+                      case AST.OutType => {
+                        isBound += name
+                        Seq(IR.RelBindOut(label, name))
+                      }
+                      case AST.SelfType => ??? // unreachable
+                    }
+                  }
+                }
+                case AST.WildcardBinding =>
+                  tpe match {
+                    case AST.NumberType => Seq.empty
+                    case AST.SymbolType => Seq.empty
+                    case AST.InType => Seq(IR.RelExistsIn(label))
+                    case AST.OutType => Seq(IR.RelExistsOut(label))
+                    case AST.SelfType => ??? // unreachable
+                  }
+                case AST.IDBinding => ??? // unreachable
+              }
+          })
+
+        def handleRelationCondition(rel : AST.Relation) : Unit = rel match {
+          case AST.Relation(name, bindings) => {
+            if( !isDefined(name) ) {
+              ??? // used relation must be declared
+            }
+            val types = relationTypes(name)
+            relationType(name) match {
+              case NodeRelation => {
+                if( types.length + 1 != bindings.length ) {
+                  ??? // arity mismatch between declared relation and usage
+                }
+                unifyTypes(bindings, Seq(AST.SelfType) ++ types.map(_._2))
+                val zipped = bindings.tail zip types
+                bindings.head match {
+                  case AST.NameBinding(self) => {
+                    if( isBound(self) ) {
+                      stmts += IR.NodeCheck(self, name, getBoundProps(zipped), getBoundRels(zipped))
+                    } else {
+                      isBound += self
+                      stmts += IR.NodeQuery(name, getBoundProps(zipped), getBoundRels(zipped), Some(self))
+                    }
+                  }
+                  case AST.WildcardBinding => {
+                    stmts += IR.NodeQuery(name, getBoundProps(zipped), getBoundRels(zipped), None)
+                  }
+                  case _ => ??? // catastrophic failure, type unification should not allow anything else
+                }
+              }
+              case EdgeRelation => {
+                if( types.length + 2 != bindings.length ) {
+                  ??? // arity mismatch between declared relation and usage
+                }
+                unifyTypes(bindings, Seq(AST.InType, AST.OutType) ++ types.map(_._2))
+                val zipped = bindings.tail.tail zip types
+                (bindings.head, bindings.tail.head) match {
+                  case (AST.WildcardBinding, AST.WildcardBinding) => {
+                    stmts += IR.EdgeQuery(name, getBoundProps(zipped), None, None)
+                  }
+                  case (AST.NameBinding(from), AST.WildcardBinding) => {
+                    if( isBound(from) ) {
+                      stmts += IR.EdgeQueryFrom(name, getBoundProps(zipped), from, None)
+                    } else {
+                      isBound += from
+                      stmts += IR.EdgeQuery(name, getBoundProps(zipped), Some(from), None)
+                    }
+                  }
+                  case (AST.WildcardBinding, AST.NameBinding(to)) => {
+                    if( isBound(to) ) {
+                      stmts += IR.EdgeQueryTo(name, getBoundProps(zipped), to, None)
+                    } else {
+                      isBound += to
+                      stmts += IR.EdgeQuery(name, getBoundProps(zipped), None, Some(to))
+                    }
+                  }
+                  case (AST.NameBinding(from), AST.NameBinding(to)) => {
+                    if( isBound(from) || isBound(to)) {
+                      if( isBound(from) && isBound(to) ) {
+                        stmts += IR.EdgeQueryBoth(name, getBoundProps(zipped), from, to)
+                      } else {
+                        if( isBound(from) ) {
+                          isBound += to
+                          stmts += IR.EdgeQueryFrom(name, getBoundProps(zipped), from, Some(to))
+                        } else { // isBound(to)
+                          isBound += from
+                          stmts += IR.EdgeQueryTo(name, getBoundProps(zipped), to, Some(from))
+                        }
+                      }
+                    } else {
+                      isBound += from
+                      isBound += to
+                      stmts += IR.EdgeQuery(name, getBoundProps(zipped), Some(from), Some(to))
+                    }
+                  }
+                  case _ => ??? // only combinations of wildcards and bindings are expected for
+                                // the first two arguments to an edge relation
+                }
+              }
+              case PlainRelation => {
+                if( types.length != bindings.length ) {
+                  ??? // arity mismatch between declared relation and usage
+                }
+                unifyTypes(bindings, types.map(_._2))
+                val zipped = bindings zip types
+                stmts += IR.NodeQuery(name, getBoundProps(zipped), getBoundRels(zipped), None)
               }
             }
-          })
-        } else {
-          ??? // need to declare relations for which you give facts
-        }
-      }
-    })
-    
-    (labelOf.toMap, refersTo.toMap, definedBy.toMap, declMembers.toMap)
-  }
-
-  def resolveTypes(directives : Seq[Directive], refersTo : Map[ID,ID], definedBy : Map[ID,ID], declMembers : Map[ID,Seq[ID]]) : Map[ID,Type] = {
-    val constraints = new ArrayBuffer[TypeConstraint]
-    
-    def constrainBinding(binding : Binding) : Unit = binding match {
-      case IntBinding(_) => constraints += UnifyIDType(binding.id, NumberType)
-      case StringBinding(_) => constraints += UnifyIDType(binding.id, SymbolType)
-      case NameBinding(_) => ()
-      case WildcardBinding() => ()
-    }
-    
-    directives.foreach(d => d match {
-      case Fact(name, head, conditions) => {
-        head.foreach(constrainBinding(_))
-        constraints += UnifyTypeSeq(head.map(bind => UnifyTypeVID(bind.id)), head.map(bind => UnifyTypeVID(definedBy(bind.id))))
-        conditions.foreach(cond => cond match {
-          case Relation(_, bindings) => {
-            bindings.foreach(constrainBinding(_))
-            constraints += UnifyTypeSeq(bindings.map(bind => UnifyTypeVID(bind.id)), bindings.map(bind => UnifyTypeVID(refersTo(bind.id))))
           }
-        })
-      }
-      case PlainDeclaration(name, types) => {
-        constraints += UnifyTypeSeq(types.map(tp => UnifyTypeVType(tp._2)), declMembers(d.id).map(UnifyTypeVID(_)))
-      }
-      case NodeDeclaration(name, types) => {
-        constraints += UnifyTypeSeq(
-          Seq(UnifyTypeVType(NodeType)) ++ types.map(tp => UnifyTypeVType(tp._2)),
-          declMembers(d.id).map(UnifyTypeVID(_)))
-      }
-      case EdgeDeclaration(name, types) => {
-        constraints += UnifyTypeSeq(
-          Seq(UnifyTypeVType(NodeType), UnifyTypeVType(NodeType)) ++ types.map(tp => UnifyTypeVType(tp._2)),
-          declMembers(d.id).map(UnifyTypeVID(_)))
+        }
+
+        def unifyTypes(head : Seq[AST.Binding], headTypes : Seq[AST.Type]) =
+          (head zip headTypes).foreach({
+            case (AST.NumberBinding(_), AST.NumberType) => ()
+            case (AST.SymbolBinding(_), AST.SymbolType) => ()
+            case (AST.NameBinding(name), tpe) => {
+              if( typeContext.contains(name) ) {
+                (typeContext(name), tpe) match {
+                  case (AST.NumberType, AST.NumberType) => ()
+                  case (AST.SymbolType, AST.SymbolType) => ()
+                  // any combination of in and out is OK
+                  // self-type matches both in and out, but not other self
+                  // (if we allowed self-self you could ask for 2 vertices to be the same vertex...)
+                  case (AST.InType, AST.InType) => ()
+                  case (AST.OutType, AST.OutType) => ()
+                  case (AST.InType, AST.OutType) => ()
+                  case (AST.OutType, AST.InType) => ()
+                  case (AST.OutType, AST.SelfType) => ()
+                  case (AST.InType, AST.SelfType) => ()
+                  case (AST.SelfType, AST.OutType) => ()
+                  case (AST.SelfType, AST.InType) => ()
+                  case _ => ??? // type mismatch
+                }
+              } else {
+                typeContext(name) = tpe
+              }
+            }
+            case (AST.WildcardBinding, _) => ()
+            case (AST.IDBinding, _) => ??? // no ID bindings allowed outside node fact heads
+            case _ => ??? // type mismatch with literal
+          })
+
+        val headTypes = relationTypes(name)
+        relationType(name) match {
+          case NodeRelation => {
+            if( headTypes.length + 1 != head.length ) {
+              ??? // arity mismatch between fact and declared relation
+            }
+            if( head.head != AST.IDBinding ) {
+              ??? // when defining a new node, we can't constrain its identity yet so we require $
+            }
+            unifyTypes(head.tail, headTypes.map(_._2))
+            conditions.foreach(handleCondition(_))
+            stmts += IR.NodeEnsure(name, getBoundProps(head.tail zip headTypes), getBoundRels(head.tail zip headTypes))
+          }
+          case EdgeRelation => {
+            if( headTypes.length + 2 != head.length ) {
+              ??? // arity mismatch between fact and declared relation
+            }
+            (head.head, head.tail.head) match {
+              case (AST.NameBinding(from), AST.NameBinding(to)) => {
+                typeContext(from) = AST.InType
+                typeContext(to) = AST.OutType
+                unifyTypes(head.tail.tail, headTypes.map(_._2))
+                conditions.foreach(handleCondition(_))
+                stmts += IR.EdgeEnsure(name, getBoundProps(head.tail.tail zip headTypes), from, to)
+              }
+              case _ => ??? // when defining a new edge, both from and to must be bound to existing nodes
+            }
+          }
+          case PlainRelation => {
+            if( headTypes.length != head.length ) {
+              ??? // arity mismatch between fact and declared relation
+            }
+            unifyTypes(head, headTypes.map(_._2))
+            conditions.foreach(handleCondition(_))
+            stmts += IR.NodeEnsure(name, getBoundProps(head zip headTypes), getBoundRels(head zip headTypes))
+          }
+        }
+
+        IR.Block(stmts.toSeq)
       }
     })
-    Typer.unify(constraints.toSeq)
+
+    blocks.toSeq
   }
 
-  def checkAllHeadsMentioned(facts : Seq[Fact]) : Unit =
-    facts.foreach({
-      case Fact(_, head, conditions) => {
-        val headNames = head.flatMap({
-          case IntBinding(_) => Seq.empty
-          case StringBinding(_) => Seq.empty
-          case NameBinding(name) => Seq(name)
-          case WildcardBinding() => Seq.empty
-        }).toSet
-        val condNames = conditions.flatMap({
-          case Relation(name, bindings) => bindings.flatMap({
-            case IntBinding(_) => Seq.empty
-            case StringBinding(_) => Seq.empty
-            case NameBinding(name) => Seq(name)
-            case WildcardBinding() => Seq.empty
-          })
-        }).toSet
-        val unreferenced = headNames &~ condNames
-        if( !unreferenced.isEmpty ) {
-          ??? // all head variables must be referenced in the fact body
-        }
-      }
-    })
-  
   import org.apache.tinkerpop.gremlin.process.traversal.dsl.graph.{GraphTraversalSource,__,GraphTraversal};
   import org.apache.tinkerpop.gremlin.process.traversal._;
   import org.apache.tinkerpop.gremlin.structure.Edge;
   import org.apache.tinkerpop.gremlin.structure.Vertex;
   import org.apache.tinkerpop.gremlin.structure.io.IoCore;
 
-  def generateTraversal(facts : Set[Fact], typeOf : Map[ID,Type], labelOf : Map[ID,String], definedBy : Map[ID,ID], g : GraphTraversalSource) : Option[GraphTraversal[Vertex,Vertex]] = {
+  def generateTraversal(blocks : Seq[IR.Block], g : GraphTraversalSource) : GraphTraversal[Object,Vertex] = {
+    import IR._
 
-    ???
-    /*var nextName = 0
+    def genFirstStatement(stmt : Statement) : GraphTraversal[Object,Vertex] = stmt match {
+      case _ => ???
+    }
+
+    def genNextStatement[From,To](src : GraphTraversal[From,To], stmt : Statement) : GraphTraversal[From,Vertex] = {
+      ???
+    }
+
+    def genBlockTraversal(block : Block) : GraphTraversal[Object,Vertex] = block match {
+      case Block(stmts) => {
+        if( stmts.isEmpty ) {
+          ??? // how?
+        }
+        stmts.tail.foldLeft(genFirstStatement(stmts.head))((src, stmt) => {
+          genNextStatement(src, stmt)
+        })
+      }
+    }
+
+    g.inject(1.asInstanceOf[Object]).union(
+      blocks.map(genBlockTraversal(_)) :_*
+    )
+  }
+
+  /*def generateTraversal(facts : Set[Fact], typeOf : Map[ID,Type], labelOf : Map[ID,String], definedBy : Map[ID,ID], g : GraphTraversalSource) : Option[GraphTraversal[Vertex,Vertex]] = {
+
+    var nextName = 0
     val names = new HashMap[ID,String]
 
     def nameOf(id : ID) : String = {
@@ -467,10 +608,10 @@ object Solver extends StrictLogging {
           }
         }) :_*
       )
-    ).emit)*/
-  }
+    ).emit)
+  }*/
 
-  def solve(program : Seq[Fact], graph : GraphTraversalSource) : GraphTraversal[Vertex,java.util.Map[Object,Object]] =
+  def solve(program : Seq[AST.Directive], graph : GraphTraversalSource) : GraphTraversal[Vertex,java.util.Map[Object,Object]] =
     ???
     /*for(checked <- checkAllHeadsMentioned(program);
         traversal <- generateTraversal(checked, graph))

@@ -1,4 +1,7 @@
 
+.decl foo(x : number)
+.decl bar(x : number)
+
 foo(1).
 bar(X) :- foo(X).
 foo(2).
