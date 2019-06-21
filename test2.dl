@@ -1,4 +1,7 @@
 
+.decl parent(parent : symbol, child : number)
+.decl test(child : number)
+
 parent("bobbie", 2).
 parent("sue", 2).
 

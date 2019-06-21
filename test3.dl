@@ -1,4 +1,7 @@
 
+.decl parent(parent : symbol, child : symbol)
+.decl ancestor(ancestor : symbol, individual : symbol)
+
 parent("maggie", "bobbie").
 parent("bobbie", "marie").
 parent("sue", "marie").

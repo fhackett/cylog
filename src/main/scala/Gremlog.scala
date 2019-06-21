@@ -87,28 +87,28 @@ object Parser {
   def nameType [_ : P] : P[(String,Type)] = P( name.! ~ ws ~ ":" ~ ws ~ tpe )
   def declaration [_ : P] : P[PlainDeclaration] =
     P(
-      (".decl" ~ Ws ~ name.! ~ ws ~ "(" ~ ws ~ nameType.rep(sep=(ws ~ ",")) ~ ")").map({
+      (".decl" ~/ Ws ~ name.! ~ ws ~ "(" ~/ ws ~ nameType.rep(sep=(ws ~ "," ~/ ws)) ~ ")").map({
         case (name, types) => PlainDeclaration(name, types)
       }))
 
   def nodeDecl [_ : P] : P[NodeDeclaration] =
     P(
-      (".node" ~ Ws ~ name.! ~ ws ~ "(" ~ ws ~ wildcard ~ ws ~ "," ~ ws ~ nameType.rep(sep=(ws ~ ",")) ~ ")").map({
+      (".node" ~/ Ws ~ name.! ~ ws ~ "(" ~/ ws ~ wildcard ~ ws ~ "," ~ ws ~ nameType.rep(sep=(ws ~ "," ~/ ws)) ~ ")").map({
         case (name, _, types) => NodeDeclaration(name, types)
       }))
   def edgeDecl [_ : P] : P[EdgeDeclaration] =
     P(
-      (".edge" ~ Ws ~ name.! ~ ws ~ "(" ~ ws ~ wildcard ~ ws ~ "," ~ ws ~ wildcard ~ ws ~ "," ~ ws ~ nameType.rep(sep=(ws ~ ",")) ~ ")").map({
+      (".edge" ~/ Ws ~ name.! ~ ws ~ "(" ~/ ws ~ wildcard ~ ws ~ "," ~ ws ~ wildcard ~ ws ~ "," ~ ws ~ nameType.rep(sep=(ws ~ "," ~/ ws)) ~ ")").map({
         case (name, _, _, types) => EdgeDeclaration(name, types)
       }))
 
   def relation [_ : P] : P[Relation] =
-    P( (name.! ~ ws ~ "(" ~ (ws ~ bodyBind).rep(sep=(ws ~ ",")) ~ ")").map(tpl => Relation(tpl._1, tpl._2)) )
+    P( (name.! ~ ws ~ "(" ~/ bodyBind.rep(sep=(ws ~ "," ~/ ws)) ~ ")").map(tpl => Relation(tpl._1, tpl._2)) )
 
   def condition [_ : P] : P[Condition] = P( relation )
 
   def fact [_ : P] : P[Fact] =
-    P( (name.! ~/ ws ~ "(" ~/ (ws ~/ headBind).rep(sep=(ws ~ ",")) ~ ws ~ ")" ~ ws ~ (":-" ~ (ws ~ condition).rep(sep=(ws ~ ","))).? ~ ws ~ ".")
+    P( (name.! ~/ ws ~ "(" ~/ ws ~ headBind.rep(sep=(ws ~ "," ~/ ws)) ~ ws ~ ")" ~ ws ~ (":-" ~ ws ~ condition.rep(sep=(ws ~ "," ~/ ws))).? ~ ws ~ ".")
        .map(tpl => Fact(tpl._1, tpl._2, tpl._3 match { case None => Seq.empty; case Some(s) => s})) )
 
   def directive [_ : P] : P[Directive] = P( fact | declaration | nodeDecl | edgeDecl )
