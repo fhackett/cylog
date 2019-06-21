@@ -476,31 +476,166 @@ object Solver {
   import org.apache.tinkerpop.gremlin.structure.Vertex;
   import org.apache.tinkerpop.gremlin.structure.io.IoCore;
 
-  def generateTraversal(blocks : Seq[IR.Block], g : GraphTraversalSource) : GraphTraversal[Object,Vertex] = {
+  def generateTraversal(blocks : Seq[IR.Block], g : GraphTraversalSource) : GraphTraversal[Vertex,Vertex] = {
     import IR._
 
-    def genFirstStatement(stmt : Statement) : GraphTraversal[Object,Vertex] = stmt match {
-      case _ => ???
+    var nextFreshVar = 0
+    def freshVar : String = {
+      val i = nextFreshVar
+      nextFreshVar += 1
+      s"$$freshVar$i"
     }
 
-    def genNextStatement[From,To](src : GraphTraversal[From,To], stmt : Statement) : GraphTraversal[From,Vertex] = {
-      ???
+    def constrainProp[From,To](src : GraphTraversal[From,To], prop : Prop, shouldUnify : ArrayBuffer[(String,String)]) : GraphTraversal[From,To] = prop match {
+      case PropBind(label, bindTo) => src.has(label).as("$tmp").values(label).as(bindTo).select("$tmp")
+      case PropExists(label) => src.has(label)
+      case PropBound(label, boundTo) => {
+        val fresh = freshVar
+        val result = src.has(label).as("$tmp").values(label).as(fresh).select("$tmp")
+        shouldUnify += ((boundTo, fresh))
+        result.asInstanceOf[GraphTraversal[From,To]]
+      }
+      case PropLiteral(label, literal) => src.has(label, literal)
     }
 
-    def genBlockTraversal(block : Block) : GraphTraversal[Object,Vertex] = block match {
+    def performUnify[From,To](src : GraphTraversal[From,To], shouldUnify : ArrayBuffer[(String,String)]) : GraphTraversal[From,To] = {
+      if( !shouldUnify.isEmpty ) {
+        val toSelect = shouldUnify.flatMap({
+          case (l, r) => Seq(l, r)
+        }).distinct.toSeq
+        src.filter({
+          val selected = __.select(toSelect.head, toSelect.tail.head, toSelect.tail.tail :_*)
+          shouldUnify.foldLeft(selected)((src, unif) => unif match {
+            case (l, r) => src.where(l, P.eq(r))
+          })
+        })
+      } else {
+        src
+      }
+    }
+
+    def constrainVertex[From](src : GraphTraversal[From,Vertex], props : Seq[Prop], rels : Seq[Rel]) : GraphTraversal[From,Vertex] = {
+      val shouldUnify = new ArrayBuffer[(String,String)]
+
+      def constrainRel[From](src : GraphTraversal[From,Vertex], rel : Rel) : GraphTraversal[From,Vertex] = rel match {
+        case RelExistsOut(label) => src.outE(label).inV()
+        case RelExistsIn(label) => src.inE(label).outV()
+        case RelBindOut(label, bindTo) => src.outE(label).as("$tmp").outV().as(bindTo).select("$tmp").inV()
+        case RelBindIn(label, bindTo) => src.inE(label).as("$tmp").inV().as(bindTo).select("$tmp").outV()
+        case RelBoundOut(label, boundTo) => {
+          val fresh = freshVar
+          val result = src.as("$tmp").out(label).as(fresh).select("$tmp")
+          shouldUnify += ((boundTo, fresh))
+          result.asInstanceOf[GraphTraversal[From,Vertex]]
+        }
+        case RelBoundIn(label, boundTo) => {
+          val fresh = freshVar
+          val result = src.as("$tmp").in(label).as(fresh).select("$tmp")
+          shouldUnify += ((boundTo, fresh))
+          result.asInstanceOf[GraphTraversal[From,Vertex]]
+        }
+      }
+
+      val withProps = props.foldLeft(src)((src, prop) => constrainProp(src, prop, shouldUnify))
+      val withRels = rels.foldLeft(withProps)((src, rel) => constrainRel(src, rel))
+
+      performUnify(withRels, shouldUnify)
+    }
+
+    def constrainEdge[From](src : GraphTraversal[From,Edge], props : Seq[Prop]) : GraphTraversal[From,Edge] = {
+      val shouldUnify = new ArrayBuffer[(String,String)]
+      val withProps = props.foldLeft(src)((src, prop) => constrainProp(src, prop, shouldUnify))
+      performUnify(withProps, shouldUnify)
+    }
+
+    def ensureProps[From,To](src : GraphTraversal[From,To], props : Seq[Prop]) : GraphTraversal[From,To] = {
+      def ensureProp[From,To](src : GraphTraversal[From,To], prop : Prop) : GraphTraversal[From,To] = prop match {
+        case PropBind(label, bindTo) => ???
+        case PropExists(label) => ???
+        case PropBound(label, boundTo) => src.property(label, __.select(boundTo))
+        case PropLiteral(label, literal) => src.property(label, literal)
+      }
+      val withProps = props.foldLeft(src)((src, prop) => ensureProp(src, prop))
+      withProps
+    }
+
+    def ensurePropsRels[From](src : GraphTraversal[From,Vertex], props : Seq[Prop], rels : Seq[Rel]) : GraphTraversal[From,Vertex] = {
+      def ensureRel[From,To](src : GraphTraversal[From,Vertex], rel : Rel) : GraphTraversal[From,Vertex] = rel match {
+        case RelExistsOut(label) => ???
+        case RelExistsIn(label) => ???
+        case RelBindOut(label, bindTo) => ???
+        case RelBindIn(label, bindTo) => ???
+        case RelBoundOut(label, boundTo) => src.addE(label).to(boundTo).inV()
+        case RelBoundIn(label, boundTo) => src.addE(label).from(boundTo).outV()
+      }
+      val withProps = ensureProps(src, props)
+      val withRels = rels.foldLeft(withProps)((src, rel) => ensureRel(src, rel))
+      withRels
+    }
+
+    def genNextStatement[From](src : GraphTraversal[From,Vertex], stmt : Statement) : GraphTraversal[From,Vertex] = stmt match {
+      case NodeQuery(label, props, rels, bindTo) => {
+        val q = constrainVertex(src.V().hasLabel(label), props, rels)
+        bindTo match {
+          case Some(name) => q.as(name)
+          case None => q
+        }
+      }
+      case NodeCheck(bound, label, props, rels) =>
+        constrainVertex(src.select(bound), props, rels).as(bound)
+      case NodeEnsure(label, props, rels) => {
+        val q = src.where(constrainVertex(__.V().hasLabel(label), props, rels).count().is(0))
+        ensurePropsRels(q.addV(label), props, rels)
+      }
+      case EdgeQuery(label, props, bindFrom, bindTo) => {
+        val q = constrainEdge(src.V().outE(label), props)
+        val boundFrom = bindFrom match {
+          case Some(name) => q.as("$tmp").inV().as(name).select("$tmp")
+          case None => q
+        }
+        bindTo match {
+          case Some(name) => q.outV().as(name)
+          case None => q.outV()
+        }
+      }
+      case EdgeQueryFrom(label, props, from, bindTo) => {
+        val q = constrainEdge(src.select(from).outE(label), props)
+        bindTo match {
+          case Some(name) => q.outV().as(name)
+          case None => q.outV()
+        }
+      }
+      case EdgeQueryTo(label, props, to, bindFrom) => {
+        val q = constrainEdge(src.select(to).inE(label), props)
+        bindFrom match {
+          case Some(name) => q.inV().as(name)
+          case None => q.inV()
+        }
+      }
+      case EdgeQueryBoth(label, props, from, to) =>
+        constrainEdge(src.select(from).outE(label), props).outV().where(P.eq(to))
+      case EdgeEnsure(label, props, from, to) => {
+        val q = src.where(constrainEdge(__.V().outE(label), props).count().is(0))
+        ensureProps(q.addE(label).from(from).to(to), props).outV()
+      }
+    }
+
+    def genBlockTraversal(block : Block) : GraphTraversal[Vertex,Vertex] = block match {
       case Block(stmts) => {
         if( stmts.isEmpty ) {
           ??? // how?
         }
-        stmts.tail.foldLeft(genFirstStatement(stmts.head))((src, stmt) => {
+        stmts.tail.foldLeft(genNextStatement(__.identity(), stmts.head))((src, stmt) => {
           genNextStatement(src, stmt)
         })
       }
     }
 
-    g.inject(1.asInstanceOf[Object]).union(
-      blocks.map(genBlockTraversal(_)) :_*
-    )
+    g.V().hasLabel("$$$DUMMY$$$").fold().coalesce(__.unfold(), __.addV("$$$DUMMY$$$")).repeat(
+      __.union(
+        blocks.map(genBlockTraversal(_)) :_*
+      )
+    ).emit()
   }
 
   /*def generateTraversal(facts : Set[Fact], typeOf : Map[ID,Type], labelOf : Map[ID,String], definedBy : Map[ID,ID], g : GraphTraversalSource) : Option[GraphTraversal[Vertex,Vertex]] = {

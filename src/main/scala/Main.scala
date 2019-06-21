@@ -17,8 +17,14 @@ object Main extends App {
       }
       val directives = Parser.tryParse(input)
       println(directives)
-      val ir = Solver.convertToIR(directives)
-      println(ir)
+      val blocks = Solver.convertToIR(directives)
+      println(blocks)
+      import org.apache.tinkerpop.gremlin.tinkergraph.structure.TinkerGraph
+      val graph = TinkerGraph.open()
+      val g = graph.traversal()
+      val traversal = Solver.generateTraversal(blocks, g)
+      println(traversal.explain())
+      println(traversal.dedup().valueMap(true).toList())
     }
     case _ => {
       println("Gremlog, a Datalog to Apache Gremlin compiler")
@@ -26,33 +32,4 @@ object Main extends App {
       sys.exit(1)
     }
   }
-  /*val builder = OParser.builder[Config]
-  val argParser = {
-    import builder._
-    OParser.sequence(
-      programName("gremlog"),
-      head("gremlog", "0.1"),
-      arg[JFile]("<idb>").action((x, c) => c.copy(file=File(x.getPath()))),
-    )
-  }
-  val results : Option[Unit] = for(
-      config <- OParser.parse(argParser, args, Config());
-      facts <- Parser.tryParse(config.file);
-      answers <- {
-        import org.apache.tinkerpop.gremlin.tinkergraph.structure.TinkerGraph
-        val graph = TinkerGraph.open()
-        val g = graph.traversal()
-        Solver.solve(facts, g)
-      })
-    yield {
-      import collection.JavaConverters._
-      println("Results:")
-      for(answer <- answers.asScala) {
-        println(answer)
-      }
-    }
-  results match {
-    case None => sys.exit(1)
-    case Some(()) => ()
-  }*/
 }
