@@ -78,8 +78,12 @@ object Parser {
   def bodyBind [_ : P] : P[Binding] = P( intBinding | nameBinding | stringBinding | wildcardBinding | idBinding )
   def headBind [_ : P] : P[Binding] = P( intBinding | nameBinding | stringBinding | idBinding )
 
-  def ws [_ : P] = P( CharsWhileIn("\r\n\t ").? )
-  def Ws [_ : P] = P( CharsWhileIn("\r\n\t ") )
+  def ws [_ : P] = P( Ws.? )
+  def Ws [_ : P] = P(
+    (
+      CharsWhileIn("\r\n\t ") |
+      ( "//" ~/ CharsWhile(_ != '\n') )
+    ).rep(1) )
 
   def tpe [_ : P] : P[Type] =
     P( "number".!.map(_ => NumberType) | "symbol".!.map(_ => SymbolType) | "in".!.map(_ => InType) | "out".!.map(_ => OutType) )
