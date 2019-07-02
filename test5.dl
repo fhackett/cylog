@@ -1,0 +1,9 @@
+
+.node A(_, foo : number)
+.decl C(a : out, b : out)
+
+A($, 1).
+A($, 2).
+
+C(a, b) :- A(a, _), A(b, _).
+

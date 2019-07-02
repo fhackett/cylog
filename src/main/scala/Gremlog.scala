@@ -98,8 +98,12 @@ object Parser {
       }))
   def edgeDecl [_ : P] : P[EdgeDeclaration] =
     P(
-      (".edge" ~/ Ws ~ name.! ~ ws ~ "(" ~/ ws ~ wildcard ~ ws ~ "," ~ ws ~ wildcard ~ ws ~ "," ~ ws ~ nameType.rep(sep=(ws ~ "," ~/ ws)) ~ ")").map({
-        case (name, _, _, types) => EdgeDeclaration(name, types)
+      (".edge" ~/ Ws ~ name.! ~ ws ~ "(" ~/ ws ~ wildcard ~ ws ~ "," ~ ws ~ wildcard ~ ws ~ (
+        "," ~/ ws ~ nameType.rep(sep=(ws ~ "," ~/ ws)) ~ ws).? ~ ")").map({
+        case (name, _, _, types) => types match {
+          case Some(types) => EdgeDeclaration(name, types)
+          case None => EdgeDeclaration(name, Seq.empty)
+        }
       }))
 
   def relation [_ : P] : P[Relation] =
@@ -565,8 +569,8 @@ object Solver {
         case RelExistsIn(label) => ???
         case RelBindOut(label, bindTo) => ???
         case RelBindIn(label, bindTo) => ???
-        case RelBoundOut(label, boundTo) => src.addE(label).to(boundTo).inV()
-        case RelBoundIn(label, boundTo) => src.addE(label).from(boundTo).outV()
+        case RelBoundOut(label, boundTo) => src.addE(label).to(boundTo).outV()//.sideEffect((t : Traverser[Vertex]) => println(s"OUT $t"))
+        case RelBoundIn(label, boundTo) => src.addE(label).from(boundTo).inV()//.sideEffect((t : Traverser[Vertex]) => println(s"IN $t"))
       }
       val withProps = ensureProps(src, props)
       val withRels = rels.foldLeft(withProps)((src, rel) => ensureRel(src, rel))
@@ -584,7 +588,28 @@ object Solver {
       case NodeCheck(bound, label, props, rels) =>
         constrainVertex(src.select(bound), props, rels).as(bound)
       case NodeEnsure(label, props, rels) => {
-        val q = src.where(constrainVertex(__.V().hasLabel(label), props, rels).count().is(0))
+        val names = props.flatMap({
+          case PropBind(label, bindTo) => ???
+          case PropExists(label) => ???
+          case PropBound(label, boundTo) => List(boundTo)
+          case PropLiteral(label, literal) => List.empty
+        }) ++ rels.flatMap({
+          case RelExistsOut(label) => ???
+          case RelExistsIn(label) => ???
+          case RelBindOut(label, bindTo) => ???
+          case RelBindIn(label, bindTo) => ???
+          case RelBoundOut(label, boundTo) => List(boundTo)
+          case RelBoundIn(label, boundTo) => List(boundTo)
+        })
+        val q = {
+          if( names.length > 1 ) {
+            src.select(names.head, names.tail.head, names.tail.tail :_*)//.sideEffect((t : Traverser[java.util.Map[String,Any]]) => println(s"S $t"))
+          } else if( !names.isEmpty ) {
+            src.select(names.head)
+          } else { 
+            src
+          }
+        }.where(constrainVertex(__.V().hasLabel(label), props, rels)/*.sideEffect((t : Traverser[Vertex]) => println(s"N $t"))*/.count().is(0))
         ensurePropsRels(q.addV(label), props, rels)
       }
       case EdgeQuery(label, props, bindFrom, bindTo) => {
@@ -637,119 +662,5 @@ object Solver {
       )
     ).emit()
   }
-
-  /*def generateTraversal(facts : Set[Fact], typeOf : Map[ID,Type], labelOf : Map[ID,String], definedBy : Map[ID,ID], g : GraphTraversalSource) : Option[GraphTraversal[Vertex,Vertex]] = {
-
-    var nextName = 0
-    val names = new HashMap[ID,String]
-
-    def nameOf(id : ID) : String = {
-      if( names.contains(id) ) {
-        names(id)
-      } else {
-        names(id) = nextName.toString
-        nextName += 1
-        names(id)
-      }
-    }
-
-    val boundTo = new HashMap[ID,ID]
-
-    def genProps[A](src : GraphTraversal[A,Vertex], head : Seq[Binding]) : GraphTraversal[A,Vertex] =
-      head.foldLeft(src)((t, b) => b match {
-        case IntValue(v) => t.property(labelOf(definedBy(b.id)), v)
-        case StringValue(v) => t.property(labelOf(definedBy(b.id)), v)
-        case NameValue(v) => typeOf(b.id) match {
-          case IntType|SymbolType => t.property(labelOf(definedBy(b.id)), __.select(nameOf(boundTo(b.id))))
-          case NodeType => t.addE(labelOf(definedBy(b.id))).to(s"${v}0").inV()
-        }
-        case WildcardBinding() => ???
-      })
-
-    def genInstCase[A,B](src : GraphTraversal[A,B], name : String, head : Seq[Value]) : GraphTraversal[A,Vertex] =
-      genProps(src.addV(name), head)
-
-    Some(g.V().hasLabel("$$$DUMMY$$$").fold().coalesce(__.unfold(), __.addV("$$$DUMMY$$$")).repeat(
-      __.union(
-        facts.map(fact => {
-          if( fact.conditions.isEmpty ) {
-            val findHead = fact.head.foldLeft[GraphTraversal[Any,Vertex]](__.V().hasLabel(fact.name))((t, b) => b match {
-              case IntBinding(v) => t.has(labelOf(definedBy(b.id)), v)
-              case StringBinding(v) => t.has(labelOf(definedBy(b.id)), v)
-              case WildcardBinding() => ???
-              case NameValue(_) => ???
-            })
-            genInstCase(findHead.fold().not(__.unfold()), fact.name, fact.head)
-          } else {
-            val boundVars = new HashMap[String,ArrayBuffer]
-            def performSearch(t : GraphTraversal[Vertex,Vertex], cond : Relation) : GraphTraversal[Vertex,Vertex] = cond match {
-              case Relation(name, params) => {
-                params.zipWithIndex.foldLeft[GraphTraversal[Vertex,Vertex]](t.hasLabel(name))((t, v) => v match {
-                  case (IntValue(v), i) => t.has(i.toString, v)
-                  case (StringValue(v), i) => t.has(i.toString, v)
-                  case (NameValue(v), i) => {
-                    val idx = boundVars.getOrElse(v, 0)
-                    boundVars.update(v, idx + 1)
-                    t.has(i.toString).as("$interim").values(i.toString).as(s"$v$idx").select("$interim")
-                  }
-                })
-              }
-            }
-            val search : GraphTraversal[Vertex,Vertex] =
-              fact.conditions.tail.foldLeft[GraphTraversal[Vertex,Vertex]](performSearch(__.V(), fact.conditions.head))((t, cond) =>
-                  performSearch(t.V(),cond))
-
-            val eqToCheck =
-              (for(
-                   (name, count) <- boundVars.toSeq;
-                   i <- 1 until count)
-                 yield (name, i)).toSeq
-            val eqChecks =
-              if( !eqToCheck.isEmpty ) {
-                search.filter(eqToCheck.foldLeft[GraphTraversal[Vertex,java.util.Map[String,Object]]]({
-                  val names = (for(
-                      (name, count) <- boundVars.toSeq;
-                      i <- 0 until count)
-                    yield s"$name$i").toSeq
-                  __.identity().select[Object](names.head, names.tail.head, names.tail.tail :_*)
-                })((t, tp) => tp match {
-                  case (name, i) => t.where(s"${name}0", P.eq(s"$name$i"))
-                }))
-              } else {
-                search
-              }
-            val findHead = {
-              val toCheck = new ArrayBuffer[String]
-              val find = fact.head.zipWithIndex.foldLeft(__.V().hasLabel(fact.name))((t, tp) => tp match {
-                case (IntValue(v), i) => t.has(i.toString, v)
-                case (StringValue(v), i) => t.has(i.toString, v)
-                case (NameValue(v), i) => {
-                  toCheck += v
-                  t.has(i.toString).as("$interim").values(i.toString).as(s"$v${boundVars(v)}").select("$interim")
-                }
-              })
-              if( !toCheck.isEmpty ) {
-                val toSelect = toCheck.flatMap(n => Seq(s"${n}0", s"$n${boundVars(n)}"))
-                val selected = find.select(toSelect.head, toSelect.tail.head, toSelect.tail.tail :_*)
-                toCheck.foldLeft(selected)((t, n) => t.where(s"${n}0", P.eq(s"$n${boundVars(n)}")))
-              } else {
-                find
-              }
-            }
-            genInstCase(
-              eqChecks.filter(findHead.fold().not(__.unfold())),
-              fact.name,
-              fact.head)
-          }
-        }) :_*
-      )
-    ).emit)
-  }*/
-
-  def solve(program : Seq[AST.Directive], graph : GraphTraversalSource) : GraphTraversal[Vertex,java.util.Map[Object,Object]] =
-    ???
-    /*for(checked <- checkAllHeadsMentioned(program);
-        traversal <- generateTraversal(checked, graph))
-      yield traversal.dedup().valueMap(true)*/
 }
 

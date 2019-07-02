@@ -1,0 +1,12 @@
+
+.node A(_, foo : number)
+.edge B(_, _, bar : number)
+.decl C(a : out, b : out)
+
+A($, 1).
+A($, 2).
+
+B(a, b, c) :- A(a, c), A(b, _).
+
+C(a, b) :- B(a, b, _).
+

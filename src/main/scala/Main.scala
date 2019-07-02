@@ -24,7 +24,12 @@ object Main extends App {
       val g = graph.traversal()
       val traversal = Solver.generateTraversal(blocks, g)
       println(traversal.explain())
-      println(traversal.dedup().valueMap(true).toList())
+
+      val vmap = traversal.valueMap(true)
+      while(vmap.hasNext()) {
+        println(vmap.next())
+      }
+      g.io("output.xml").write().iterate()
     }
     case _ => {
       println("Gremlog, a Datalog to Apache Gremlin compiler")

@@ -1,0 +1,9 @@
+
+.node A(_, foo : number)
+.edge B(_, _)
+
+A($, 1).
+A($, 2).
+
+B(a, b) :- A(a, 1), A(b, 2).
+
