@@ -31,46 +31,20 @@ object Main extends App {
       }
       val directives = Parser.tryParse(input)
       println("Parsed Datalog directives")
-      //println(directives)
-      val blocks = Solver.convertToIR(directives)
-      println("Converted directives to IR")
-      //println(blocks)
-      // import org.apache.tinkerpop.gremlin.tinkergraph.structure.TinkerGraph
-      // val graph = TinkerGraph.open()
-      import org.apache.tinkerpop.gremlin.neo4j.structure.Neo4jGraph
-      val graph = Neo4jGraph.open("./testgraph")
 
-      val g = graph.traversal()
-
-      graph.tx().open()
-      g.V().drop().iterate()
-      graph.tx().commit()
-
-      graph.cypher("CREATE INDEX ON :Y(i)")
-
-      graph.tx().open()
-      for(i <- 0 until 100) {
-        g.addV("X").property("i", i).iterate()
+      val queries = Compiler.compile(directives)
+      for(block <- queries) {
+        println("---BLOCK---")
+        for(part <- block) {
+          println(part)
+          println("--")
+        }
       }
-      graph.tx().commit()
-
-      graph.tx().open()
-      val traversal = Solver.generateTraversal(blocks, g)
-      println("Generated Gremlin traversal, executing")
-      //println(traversal.explain())
 
       val t0 = System.nanoTime()
-      traversal.iterate()
       val t1 = System.nanoTime()
       println(s"Execution time: ${prettyTime(t1-t0, List("ns", "μs", "ms", "s"))}")
-      graph.tx().commit()
-      graph.close()
-      /*val vmap = traversal.valueMap(true)
-      while(vmap.hasNext()) {
-        println(vmap.next())
-      }*/
       
-      // g.io("output.xml").write().iterate()
     }
     case _ => {
       println("Gremlog, a Datalog to Apache Gremlin compiler")
