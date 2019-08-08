@@ -252,18 +252,30 @@ object Compiler {
       s"freshName$freshCounter"
     }
 
-    def printBinding(bind : AST.Binding) : String = bind match {
+    def printLiteralBinding(bind : AST.Binding) : String = bind match {
       case AST.SymbolBinding(v) => s""""${v}""""
       case AST.NumberBinding(v) => s"$v"
-      case AST.NameBinding(name) => s"`$name`"
-      case AST.WildcardBinding => freshName
-      case _ => ??? // unsupported binding?
+      case _ => ??? // that's not a literal
     }
 
-    def genRelationCheck(rel : AST.Relation) : String = rel match {
+    def printExpression(expr : AST.Expression, propBinds : HashMap[String,AST.Expression]) : String = expr match {
+      case AST.ExpressionName(name) if propBinds.contains(name) => printExpression(propBinds(name), propBinds)
+      case AST.ExpressionName(name) => s"`$name`" // this has to be comparing node identity or edge identity (or it would not typecheck)
+      case AST.ExpressionProp(base, prop) => s"`$base`.`$prop`"
+      case AST.ExpressionNumber(v) => s"$v"
+      case AST.ExpressionSymbol(v) => s""""$v""""
+      case AST.ExpressionBinary(kind, lhs, rhs) => {
+        val op = kind match {
+          case AST.ExpressionBinaryPlus => "+"
+          case AST.ExpressionBinaryMinus => "-"
+        }
+        s"${printExpression(lhs, propBinds)} $op ${printExpression(rhs, propBinds)}"
+      }
+    }
+
+    def genRelationCheck(rel : AST.Relation, propBinds : HashMap[String,AST.Expression], self : String = freshName) : String = rel match {
       case AST.Relation(name, bindings) => {
         if( declTypes.contains(name) ) {
-          val tmpName = freshName
           val vertices = new ArrayBuffer[(String,AST.Binding)]()
           val props = new ArrayBuffer[(String,AST.Binding)]()
           (bindings zip declTypes(name)).foreach({
@@ -271,13 +283,31 @@ object Compiler {
             case (bind, (n, _)) => props += ((n, bind))
           })
 
-          val binds = props.map({
-            case (pName, bind) => s"`$pName`: ${printBinding(bind)}"
-          })
-          val withProps = s"(`$tmpName`:`$name` { ${binds.mkString(", ")} })"
+          val binds = // if propBinds is specified, we should generate a pattern with all the EQ information embedded (for inside e.g a NOT)
+            if( propBinds != null ) {
+              props.flatMap({
+                case (pName, AST.NameBinding(boundName)) => Seq(s"`$pName`: ${printExpression(propBinds(boundName), propBinds)}")
+                case (_, AST.WildcardBinding) => Seq.empty // TODO: check for existence
+                case (pName, bind) => Seq(s"`$pName`: ${printLiteralBinding(bind)}")
+              })
+            } else {
+              props.flatMap({
+                case (pName, AST.NameBinding(_)) => Seq.empty // these get converted into equality checks, ignore here as bindings are not given
+                case (_, AST.WildcardBinding) => Seq.empty // TODO: check for existence
+                case (pName, bind) => Seq(s"`$pName`: ${printLiteralBinding(bind)}")
+              })
+            }
+          val withProps =
+            if(!binds.isEmpty) {
+              s"(`$self`:`$name` { ${binds.mkString(", ")} })"
+            } else {
+              s"(`$self`:`$name`)"
+            }
           if(!vertices.isEmpty) {
-            val links = vertices.map({
-              case (eName, bind) => s"(`$tmpName`)-[:`$eName`]->(`${printBinding(bind)}`)"
+            val links = vertices.flatMap({
+              case (eName, AST.NameBinding(otherVertex)) => Seq(s"(`$self`)-[:`$eName`]->(`$otherVertex`)")
+              case (eName, AST.WildcardBinding) => Seq.empty
+              case _ => ??? // putting anything else for a vertex is not type-correct
             })
             s"$withProps, ${links.mkString(", ")}"
           } else {
@@ -285,13 +315,22 @@ object Compiler {
           }
         } else if( isVertex(name) ) {
           Predef.assert(bindings.length == 1)
-          s"(`${printBinding(bindings.head)}`:`$name`)"
+          bindings.head match {
+            case AST.NameBinding(boundName) => s"(`$boundName`:`$name`)"
+            case AST.WildcardBinding => s"(:`$name`)" // TODO: does this even makes sense?
+            case _ => ??? // no other case is type-correct here
+          }
         } else if( isEdge(name) ) {
           Predef.assert(bindings.length == 3)
-          val Seq(edge, l, r) = bindings.map(printBinding(_))
-          s"(`$l`)-[`$edge`:`$name`]->(`$r`)"
+          val Seq(edge, l, r) = bindings.map({
+            case AST.NameBinding(boundName) => s"`$boundName`"
+            case AST.WildcardBinding => ""
+            case _ => ??? // no other case is type-correct here
+          })
+          // backticks are inserted above dring the mapping, there weren't forgotten
+          s"($l)-[$edge:$name]->($r)"
         } else {
-          ???
+          ??? // type error
         }
       }
     }
@@ -299,21 +338,48 @@ object Compiler {
     evaluationOrderGroups.map(_.flatMap(head => {
       factTree(head).map({
         case (bindings, conditions) => {
-          val patternParts = new ArrayBuffer[AST.Relation]()
+          val patternParts = new ArrayBuffer[(String,AST.Relation)]()
           val patternChecks = new ArrayBuffer[AST.Condition]()
+          val propBinds = HashMap[String,AST.Expression]()
           conditions.foreach({
-            case r : AST.Relation => patternParts += r
+            case r @ AST.Relation(rName, rBindings) => {
+              val vertexName = freshName
+              patternParts += ((vertexName, r))
+              (rBindings zip declTypes(rName)).foreach({
+                case (_, (_, AST.VertexType)) => ()
+                case (AST.NameBinding(boundName), (prop, _)) => {
+                  if( propBinds.contains(boundName) ) {
+                    patternChecks += AST.InfixRelation(AST.InfixRelationEQ, propBinds(boundName), AST.ExpressionProp(vertexName,prop))
+                  } else {
+                    propBinds += ((boundName, AST.ExpressionProp(vertexName,prop)))
+                  }
+                }
+                case _ => () // non-name bindings get picked up later
+              })
+            }
             case n : AST.Negation => patternChecks += n
             case i : AST.InfixRelation => patternChecks += i
           })
 
-          val matchParts = patternParts.map(genRelationCheck(_))
+          val matchParts = patternParts.map({
+            case (self, rel) => genRelationCheck(rel, propBinds=null, self=self)
+          })
           
           val checkParts = patternChecks.map({
             case _ : AST.Relation => ??? // unreachable
             case AST.Negation(rel) =>
-              s"(NOT ${genRelationCheck(rel)})"
-            case AST.InfixRelation(kind, lhs, rhs) => ??? // TODO: infix checks
+              s"(NOT ${genRelationCheck(rel, propBinds=propBinds)})"
+            case AST.InfixRelation(kind, lhs, rhs) => {
+              val op = kind match {
+                case AST.InfixRelationEQ => "="
+                case AST.InfixRelationNEQ => "<>"
+                case AST.InfixRelationLT => "<"
+                case AST.InfixRelationGT => ">"
+                case AST.InfixRelationLTE => "<="
+                case AST.InfixRelationGTE => ">="
+              }
+              s"(${printExpression(lhs, propBinds)} $op ${printExpression(rhs, propBinds)})"
+            }
           })
           
           val mergeProps = new ArrayBuffer[(AST.Binding,String)]()
@@ -326,10 +392,12 @@ object Compiler {
           val self = freshName
 
           val propParts = mergeProps.map({
-            case (bind, propName) => s"`$propName` : ${printBinding(bind)}"
+            case (AST.NameBinding(boundName), propName) => s"`$propName`: ${printExpression(propBinds(boundName), propBinds)}"
+            case (bind, propName) => s"`$propName`: ${printLiteralBinding(bind)}"
           })
           val vertexParts = mergeVertices.map({
-            case (bind, edgeType) => s"MERGE (`$self`)-[:`$edgeType`]->(`${printBinding(bind)}`)"
+            case (AST.NameBinding(boundName), edgeType) => s"MERGE (`$self`)-[:`$edgeType`]->(`${boundName}`)"
+            case _ => ??? // TODO: identity bindings?; otherwise, no other binding makes sense in HEAD
           })
 
           val result1 = if( !matchParts.isEmpty ) s"""MATCH ${matchParts.mkString(", ")}\n""" else ""

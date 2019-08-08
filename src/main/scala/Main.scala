@@ -2,6 +2,7 @@ package ca.uwaterloo.gremlog
 
 import java.nio.file.{Files,Paths}
 import java.nio.charset.StandardCharsets
+import scala.util.{Using,Try,Success,Failure}
 
 object Main extends App {
   
@@ -32,19 +33,48 @@ object Main extends App {
       val directives = Parser.tryParse(input)
       println("Parsed Datalog directives")
 
-      val queries = Compiler.compile(directives)
-      for(block <- queries) {
+      val blocks = Compiler.compile(directives)
+      /*for(block <- blocks) {
         println("---BLOCK---")
         for(part <- block) {
           println(part)
           println("--")
         }
-      }
+      }*/
+      import org.neo4j.driver.v1.{AuthTokens,Driver,GraphDatabase,Session,StatementResult,TransactionConfig}
 
-      val t0 = System.nanoTime()
-      val t1 = System.nanoTime()
-      println(s"Execution time: ${prettyTime(t1-t0, List("ns", "μs", "ms", "s"))}")
-      
+      Using.Manager { use =>
+        val driver = use(GraphDatabase.driver("bolt://localhost:7687", AuthTokens.none()))
+        val session = use(driver.session())
+
+        val t0 = System.nanoTime()
+        try {
+          for(block <- blocks) {
+            var continue = true;
+            while(continue) {
+              continue = false;
+              for(part <- block) {
+                val result = session.run(part, TransactionConfig.empty())
+                val summary = result.consume()
+                val counters = summary.counters()
+                continue |= counters.nodesCreated() + counters.relationshipsCreated() > 0
+              }
+            }
+          }
+        } finally {
+          val t1 = System.nanoTime()
+          println(s"Execution time: ${prettyTime(t1-t0, List("ns", "μs", "ms", "s"))}")
+        }
+      } match {
+        case Success(()) => {
+          println("Success.")
+          sys.exit(0)
+        }
+        case Failure(e) => {
+          println(s"Aborting, error executing query: ${e.getMessage}")
+          sys.exit(1)
+        }
+      }
     }
     case _ => {
       println("Gremlog, a Datalog to Apache Gremlin compiler")
