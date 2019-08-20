@@ -34,13 +34,13 @@ object Main extends App {
       println("Parsed Datalog directives")
 
       val blocks = Compiler.compile(directives)
-      /*for(block <- blocks) {
+      for(block <- blocks) {
         println("---BLOCK---")
         for(part <- block) {
           println(part)
           println("--")
         }
-      }*/
+      }
       import org.neo4j.driver.v1.{AuthTokens,Driver,GraphDatabase,Session,StatementResult,TransactionConfig}
 
       Using.Manager { use =>

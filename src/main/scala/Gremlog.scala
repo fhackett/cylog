@@ -10,9 +10,10 @@ object AST {
   case object EdgeType extends Type
 
   sealed abstract class Binding
-  case class SymbolBinding(val value : String) extends Binding
-  case class NumberBinding(val value : Int) extends Binding
-  case class NameBinding(val name : String) extends Binding
+  //case class SymbolBinding(val value : String) extends Binding
+  //case class NumberBinding(val value : Int) extends Binding
+  //case class NameBinding(val name : String) extends Binding
+  case class ExprBinding(val expr : Expression) extends Binding
   case object WildcardBinding extends Binding
   case object AnonymousIDBinding extends Binding
   case class NamedIDBinding(val name : String) extends Binding
@@ -28,6 +29,8 @@ object AST {
   sealed abstract class ExpressionBinaryKind
   case object ExpressionBinaryPlus extends ExpressionBinaryKind
   case object ExpressionBinaryMinus extends ExpressionBinaryKind
+  case object ExpressionBinaryTimes extends ExpressionBinaryKind
+  case object ExpressionBinaryDivide extends ExpressionBinaryKind
 
   sealed abstract class Expression
   case class ExpressionName(val name : String) extends Expression
@@ -63,16 +66,17 @@ object Parser {
 
   def int [_ : P] : P[Int] = P( (CharIn("0-9").! ~ (CharsWhileIn("0-9").!.?).map({ case None => ""; case Some(s) => s}))
                                 .map(vs => Integer.parseInt(vs._1 ++ vs._2)) )
-  def intBinding [_ : P] : P[NumberBinding] = P( int.map(i => NumberBinding(i)) )
-  def nameBinding [_ : P] : P[NameBinding] = P( name.map(NameBinding(_)) )
+  //def intBinding [_ : P] : P[NumberBinding] = P( int.map(i => NumberBinding(i)) )
+  //def nameBinding [_ : P] : P[NameBinding] = P( name.map(NameBinding(_)) )
   def anonIDBinding [_ : P] : P[AnonymousIDBinding.type] = P( "$".!.map(_ => AnonymousIDBinding) )
   def namedIDBinding [_ : P] : P[NamedIDBinding] = P( "$" ~ ws ~ ":" ~ name.map(n => NamedIDBinding(n)) )
   def wildcardBinding [_ : P] : P[WildcardBinding.type] = P( wildcard.map(_ => WildcardBinding) )
   def string [_ : P] : P[String] = P( ("\"" ~ ("\\\"" | (!"\"" ~ AnyChar) ).rep.! ~ "\"").map(seq => new String(seq)) )
-  def stringBinding [_ : P] : P[SymbolBinding] = P( string.map(str => SymbolBinding(str)) )
+  //def stringBinding [_ : P] : P[SymbolBinding] = P( string.map(str => SymbolBinding(str)) )
+  def exprBinding [_ : P] : P[ExprBinding] = P( expression.map(expr => ExprBinding(expr)) )
 
-  def bodyBind [_ : P] : P[Binding] = P( intBinding | nameBinding | stringBinding | wildcardBinding )
-  def headBind [_ : P] : P[Binding] = P( intBinding | nameBinding | stringBinding | namedIDBinding | anonIDBinding )
+  def bodyBind [_ : P] : P[Binding] = P( exprBinding | wildcardBinding )
+  def headBind [_ : P] : P[Binding] = P( exprBinding | namedIDBinding | anonIDBinding )
 
   def ws [_ : P] = P( Ws.? )
   def Ws [_ : P] = P(
@@ -92,21 +96,54 @@ object Parser {
       }))
 
   def vertexDecl [_ : P] : P[VertexDeclaration] =
-    P( (".node" ~/ Ws ~ name.! ~ Ws).map(name => VertexDeclaration(name)) )
+    P( (".node" ~/ Ws ~ name.!).map(name => VertexDeclaration(name)) )
   def edgeDecl [_ : P] : P[EdgeDeclaration] =
-    P( (".edge" ~/ Ws ~ name.! ~ Ws).map(name => EdgeDeclaration(name)) )
+    P( (".edge" ~/ Ws ~ name.!).map(name => EdgeDeclaration(name)) )
 
   def relation [_ : P] : P[Relation] =
     P( (name.! ~ ws ~ "(" ~/ bodyBind.rep(sep=(ws ~ "," ~/ ws)) ~ ")").map(tpl => Relation(tpl._1, tpl._2)) )
   def negation [_ : P] : P[Negation] =
     P( "!" ~ ws ~ relation.map(r => Negation(r)) )
 
-  def expression [_ : P] : P[Expression] =
+  def expressionBase [_ : P] : P[Expression] =
     P(
-      name.!.map(name => ExpressionName(name)) |
+      ( "(" ~/ expression ~ ")" ) |
       ( name.! ~ ws ~ "." ~ ws ~ name.! ).map({ case (base, prop) => ExpressionProp(base, prop) }) |
+      name.!.map(name => ExpressionName(name)) |
       int.map(n => ExpressionNumber(n)) |
       string.map(str => ExpressionSymbol(str)) )
+
+  def expressionAddSub [_ : P] : P[Expression] =
+    P(
+      (expressionBase ~ ws ~ (("+".! | "-".!) ~/ ws ~ expressionBase).rep(sep=ws)).map({
+        case (lhs, rhss) =>
+          rhss.foldLeft(lhs)({
+            case (lhs, (op, rhs)) => ExpressionBinary(
+              op match {
+                case "+" => ExpressionBinaryPlus
+                case "-" => ExpressionBinaryMinus
+              },
+              lhs,
+              rhs)
+          })
+      }) )
+
+  def expressionMulDiv [_ : P] : P[Expression] =
+    P(
+      (expressionAddSub ~ ws ~ (("*".! | "/".!) ~/ ws ~ expressionAddSub).rep(sep=ws)).map({
+        case (lhs, rhss) =>
+          rhss.foldLeft(lhs)({
+            case (lhs, (op, rhs)) => ExpressionBinary(
+              op match {
+                case "*" => ExpressionBinaryTimes
+                case "/" => ExpressionBinaryDivide
+              },
+              lhs,
+              rhs)
+          })
+      }) )
+  
+  def expression [_ : P] : P[Expression] = expressionMulDiv
 
   def infixRelation [_ : P] : P[InfixRelation] =
     P(
@@ -252,12 +289,6 @@ object Compiler {
       s"freshName$freshCounter"
     }
 
-    def printLiteralBinding(bind : AST.Binding) : String = bind match {
-      case AST.SymbolBinding(v) => s""""${v}""""
-      case AST.NumberBinding(v) => s"$v"
-      case _ => ??? // that's not a literal
-    }
-
     def printExpression(expr : AST.Expression, propBinds : HashMap[String,AST.Expression]) : String = expr match {
       case AST.ExpressionName(name) if propBinds.contains(name) => printExpression(propBinds(name), propBinds)
       case AST.ExpressionName(name) => s"`$name`" // this has to be comparing node identity or edge identity (or it would not typecheck)
@@ -269,7 +300,7 @@ object Compiler {
           case AST.ExpressionBinaryPlus => "+"
           case AST.ExpressionBinaryMinus => "-"
         }
-        s"${printExpression(lhs, propBinds)} $op ${printExpression(rhs, propBinds)}"
+        s"(${printExpression(lhs, propBinds)} $op ${printExpression(rhs, propBinds)})"
       }
     }
 
@@ -286,15 +317,13 @@ object Compiler {
           val binds = // if propBinds is specified, we should generate a pattern with all the EQ information embedded (for inside e.g a NOT)
             if( propBinds != null ) {
               props.flatMap({
-                case (pName, AST.NameBinding(boundName)) => Seq(s"`$pName`: ${printExpression(propBinds(boundName), propBinds)}")
+                case (pName, AST.ExprBinding(expr)) => Seq(s"`$pName`: ${printExpression(expr, propBinds)}")
                 case (_, AST.WildcardBinding) => Seq.empty // TODO: check for existence
-                case (pName, bind) => Seq(s"`$pName`: ${printLiteralBinding(bind)}")
               })
             } else {
               props.flatMap({
-                case (pName, AST.NameBinding(_)) => Seq.empty // these get converted into equality checks, ignore here as bindings are not given
+                case (pName, AST.ExprBinding(_)) => Seq.empty // these get converted into equality checks, ignore here as bindings are not given
                 case (_, AST.WildcardBinding) => Seq.empty // TODO: check for existence
-                case (pName, bind) => Seq(s"`$pName`: ${printLiteralBinding(bind)}")
               })
             }
           val withProps =
@@ -305,7 +334,7 @@ object Compiler {
             }
           if(!vertices.isEmpty) {
             val links = vertices.flatMap({
-              case (eName, AST.NameBinding(otherVertex)) => Seq(s"(`$self`)-[:`$eName`]->(`$otherVertex`)")
+              case (eName, AST.ExprBinding(AST.ExpressionName(otherVertex))) => Seq(s"(`$self`)-[:`$eName`]->(`$otherVertex`)")
               case (eName, AST.WildcardBinding) => Seq.empty
               case _ => ??? // putting anything else for a vertex is not type-correct
             })
@@ -316,14 +345,14 @@ object Compiler {
         } else if( isVertex(name) ) {
           Predef.assert(bindings.length == 1)
           bindings.head match {
-            case AST.NameBinding(boundName) => s"(`$boundName`:`$name`)"
+            case AST.ExprBinding(AST.ExpressionName(boundName)) => s"(`$boundName`:`$name`)"
             case AST.WildcardBinding => s"(:`$name`)" // TODO: does this even makes sense?
             case _ => ??? // no other case is type-correct here
           }
         } else if( isEdge(name) ) {
           Predef.assert(bindings.length == 3)
           val Seq(edge, l, r) = bindings.map({
-            case AST.NameBinding(boundName) => s"`$boundName`"
+            case AST.ExprBinding(AST.ExpressionName(boundName)) => s"`$boundName`"
             case AST.WildcardBinding => ""
             case _ => ??? // no other case is type-correct here
           })
@@ -345,17 +374,24 @@ object Compiler {
             case r @ AST.Relation(rName, rBindings) => {
               val vertexName = freshName
               patternParts += ((vertexName, r))
-              (rBindings zip declTypes(rName)).foreach({
-                case (_, (_, AST.VertexType)) => ()
-                case (AST.NameBinding(boundName), (prop, _)) => {
-                  if( propBinds.contains(boundName) ) {
-                    patternChecks += AST.InfixRelation(AST.InfixRelationEQ, propBinds(boundName), AST.ExpressionProp(vertexName,prop))
-                  } else {
-                    propBinds += ((boundName, AST.ExpressionProp(vertexName,prop)))
+              // if rName is not in declTypes, is has to be a vertex or edge
+              if( declTypes.contains(rName) ) {
+                (rBindings zip declTypes(rName)).foreach({
+                  case (_, (_, AST.VertexType)) => ()
+                  case (AST.ExprBinding(AST.ExpressionName(boundName)), (prop, _)) => {
+                    if( propBinds.contains(boundName) ) {
+                      patternChecks += AST.InfixRelation(AST.InfixRelationEQ, propBinds(boundName), AST.ExpressionProp(vertexName,prop))
+                    } else {
+                      propBinds += ((boundName, AST.ExpressionProp(vertexName,prop)))
+                    }
                   }
-                }
-                case _ => () // non-name bindings get picked up later
-              })
+                  case (AST.ExprBinding(expr), (prop, _)) => {
+                    patternChecks += AST.InfixRelation(AST.InfixRelationEQ, AST.ExpressionProp(vertexName, prop), expr)
+                  }
+                })
+              } else {
+                assert( isVertex(rName) || isEdge(rName) )
+              }
             }
             case n : AST.Negation => patternChecks += n
             case i : AST.InfixRelation => patternChecks += i
@@ -392,11 +428,11 @@ object Compiler {
           val self = freshName
 
           val propParts = mergeProps.map({
-            case (AST.NameBinding(boundName), propName) => s"`$propName`: ${printExpression(propBinds(boundName), propBinds)}"
-            case (bind, propName) => s"`$propName`: ${printLiteralBinding(bind)}"
+            case (AST.ExprBinding(expr), propName) => s"`$propName`: ${printExpression(expr, propBinds)}"
+            case _ => ??? // you can bind a property to any expression. non-expressions make no sense
           })
           val vertexParts = mergeVertices.map({
-            case (AST.NameBinding(boundName), edgeType) => s"MERGE (`$self`)-[:`$edgeType`]->(`${boundName}`)"
+            case (AST.ExprBinding(AST.ExpressionName(boundName)), edgeType) => s"MERGE (`$self`)-[:`$edgeType`]->(`${boundName}`)"
             case _ => ??? // TODO: identity bindings?; otherwise, no other binding makes sense in HEAD
           })
 
@@ -404,7 +440,7 @@ object Compiler {
           val result2 = if( !checkParts.isEmpty ) s"WHERE ${checkParts.mkString(" AND ")}\n" else ""
 
           result1 ++ result2 ++
-          s"MERGE (`$self`:`$head` { ${propParts.mkString(", ")} })" ++
+          s"MERGE (`$self`:`$head` { ${propParts.mkString(", ")} })\n" ++
           vertexParts.mkString("\n")
         }
       })

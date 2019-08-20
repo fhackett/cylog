@@ -1,0 +1,7 @@
+
+.node X
+.decl E(e : vertex, i : number)
+.output E
+
+E(x, x.i) :- X(x).
+

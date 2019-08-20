@@ -1,0 +1,7 @@
+
+.decl X(i : number)
+.decl Y(i : number)
+
+Y(i) :- X(i).
+.output Y
+
