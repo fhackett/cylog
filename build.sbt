@@ -1,6 +1,6 @@
 scalaVersion := "2.13.0"
 
-name := "gremlog"
+name := "cylog"
 organization := "ca.uwaterloo"
 version := "0.1"
 

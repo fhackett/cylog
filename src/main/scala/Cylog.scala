@@ -1,4 +1,4 @@
-package ca.uwaterloo.gremlog
+package ca.uwaterloo.cylog
 
 import collection.mutable.{HashSet,HashMap,ArrayBuffer,ArrayDeque,TreeSet,TreeMap}
 
@@ -388,6 +388,7 @@ object Compiler {
                   case (AST.ExprBinding(expr), (prop, _)) => {
                     patternChecks += AST.InfixRelation(AST.InfixRelationEQ, AST.ExpressionProp(vertexName, prop), expr)
                   }
+                  case (AST.WildcardBinding, _) => () // wildcards bind nothing, TODO: make wildcards check for existence
                 })
               } else {
                 assert( isVertex(rName) || isEdge(rName) )

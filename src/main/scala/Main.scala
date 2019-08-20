@@ -1,4 +1,4 @@
-package ca.uwaterloo.gremlog
+package ca.uwaterloo.cylog
 
 import java.nio.file.{Files,Paths}
 import java.nio.charset.StandardCharsets
