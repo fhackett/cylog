@@ -1,0 +1,9 @@
+
+.edge call
+
+.decl TransCall(from : vertex, to : vertex)
+.output TransCall
+
+TransCall(from, to) :- call(_, from, to).
+TransCall(from, to) :- call(_, from, mid), TransCall(mid, to).
+

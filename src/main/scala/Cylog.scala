@@ -432,17 +432,27 @@ object Compiler {
             case (AST.ExprBinding(expr), propName) => s"`$propName`: ${printExpression(expr, propBinds)}"
             case _ => ??? // you can bind a property to any expression. non-expressions make no sense
           })
-          val vertexParts = mergeVertices.map({
-            case (AST.ExprBinding(AST.ExpressionName(boundName)), edgeType) => s"MERGE (`$self`)-[:`$edgeType`]->(`${boundName}`)"
-            case _ => ??? // TODO: identity bindings?; otherwise, no other binding makes sense in HEAD
-          })
 
           val result1 = if( !matchParts.isEmpty ) s"""MATCH ${matchParts.mkString(", ")}\n""" else ""
           val result2 = if( !checkParts.isEmpty ) s"WHERE ${checkParts.mkString(" AND ")}\n" else ""
 
           result1 ++ result2 ++
-          s"MERGE (`$self`:`$head` { ${propParts.mkString(", ")} })\n" ++
-          vertexParts.mkString("\n")
+          // for vertices, make sure the initial merge on $self isn't just the node, or else there will only be exactly one node of type
+          // $edgeType ever, since ($self:$edgeType) will match anything of $edgeType
+          s"MERGE (`$self`:`$head` { ${propParts.mkString(", ")} })" ++
+            (mergeVertices match {
+              case scala.collection.mutable.Seq() => "\n"
+              case scala.collection.mutable.Seq(first, rest @ _*) => {
+                val firstResult = first match {
+                  case (AST.ExprBinding(AST.ExpressionName(boundName)), edgeType) => s"-[:`$edgeType`]->(`${boundName}`)\n"
+                  //case _ => ??? // see below for identity bindings
+                }
+                firstResult ++ rest.map({
+                  case (AST.ExprBinding(AST.ExpressionName(boundName)), edgeType) => s"MERGE (`$self`)-[:`$edgeType`]->(`${boundName}`)\n"
+                  //case _ => ??? // TODO: identity bindings?; otherwise, no other binding makes sense in HEAD
+                }).mkString
+              }
+            })
         }
       })
     }).toSeq).toSeq
