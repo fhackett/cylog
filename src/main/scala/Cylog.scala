@@ -199,7 +199,7 @@ object Parser {
 
 object Compiler {
 
-  def compile(directives : Seq[AST.Directive]) : Seq[Seq[String]] = {
+  def compile(directives : Seq[AST.Directive]) : Seq[Seq[(String,Seq[String],String)]] = {
     val decls = new ArrayBuffer[AST.Declaration]()
     val facts = new ArrayBuffer[AST.Fact]()
     val outputs = new TreeSet[String]()
@@ -273,15 +273,7 @@ object Compiler {
     }
     evaluationOrderGroupCandidates += evaluationOrderCandidatesTopLevel
 
-    val evalSet = new HashSet[String]()
-    val evaluationOrderGroups = evaluationOrderGroupCandidates.map(_.filter(name => {
-      if(evalSet(name)) {
-        false
-      } else {
-        evalSet += name
-        true
-      }
-    }))
+    val evaluationOrderGroups = evaluationOrderGroupCandidates.distinct
 
     var freshCounter = 0
     def freshName : String = {
@@ -367,11 +359,18 @@ object Compiler {
     evaluationOrderGroups.map(_.flatMap(head => {
       factTree(head).map({
         case (bindings, conditions) => {
+          val dependsOn = new HashSet[String]()
+          val dependsOnSeq = new ArrayBuffer[String]()
           val patternParts = new ArrayBuffer[(String,AST.Relation)]()
           val patternChecks = new ArrayBuffer[AST.Condition]()
           val propBinds = HashMap[String,AST.Expression]()
           conditions.foreach({
             case r @ AST.Relation(rName, rBindings) => {
+              if( !dependsOn(rName) ) {
+                dependsOn += rName
+                dependsOnSeq += rName
+              }
+
               val vertexName = freshName
               patternParts += ((vertexName, r))
               // if rName is not in declTypes, is has to be a vertex or edge
@@ -394,7 +393,13 @@ object Compiler {
                 assert( isVertex(rName) || isEdge(rName) )
               }
             }
-            case n : AST.Negation => patternChecks += n
+            case n : AST.Negation => {
+              if( !dependsOn(n.relation.name) ) {
+                dependsOn += n.relation.name
+                dependsOnSeq += n.relation.name
+              }
+              patternChecks += n
+            }
             case i : AST.InfixRelation => patternChecks += i
           })
 
@@ -436,23 +441,25 @@ object Compiler {
           val result1 = if( !matchParts.isEmpty ) s"""MATCH ${matchParts.mkString(", ")}\n""" else ""
           val result2 = if( !checkParts.isEmpty ) s"WHERE ${checkParts.mkString(" AND ")}\n" else ""
 
-          result1 ++ result2 ++
-          // for vertices, make sure the initial merge on $self isn't just the node, or else there will only be exactly one node of type
-          // $edgeType ever, since ($self:$edgeType) will match anything of $edgeType
-          s"MERGE (`$self`:`$head` { ${propParts.mkString(", ")} })" ++
-            (mergeVertices match {
-              case scala.collection.mutable.Seq() => "\n"
-              case scala.collection.mutable.Seq(first, rest @ _*) => {
-                val firstResult = first match {
-                  case (AST.ExprBinding(AST.ExpressionName(boundName)), edgeType) => s"-[:`$edgeType`]->(`${boundName}`)\n"
-                  //case _ => ??? // see below for identity bindings
+          val cypherBody = result1 ++ result2 ++
+            // for vertices, make sure the initial merge on $self isn't just the node, or else there will only be exactly one node of type
+            // $edgeType ever, since ($self:$edgeType) will match anything of $edgeType
+            s"MERGE (`$self`:`$head` { ${propParts.mkString(", ")} })" ++
+              (mergeVertices match {
+                case scala.collection.mutable.Seq() => "\n"
+                case scala.collection.mutable.Seq(first, rest @ _*) => {
+                  val firstResult = first match {
+                    case (AST.ExprBinding(AST.ExpressionName(boundName)), edgeType) => s"-[:`$edgeType`]->(`${boundName}`)\n"
+                    case _ => ??? // see below for identity bindings
+                  }
+                  firstResult ++ rest.map({
+                    case (AST.ExprBinding(AST.ExpressionName(boundName)), edgeType) => s"MERGE (`$self`)-[:`$edgeType`]->(`${boundName}`)\n"
+                    case _ => ??? // TODO: identity bindings?; otherwise, no other binding makes sense in HEAD
+                  }).mkString
                 }
-                firstResult ++ rest.map({
-                  case (AST.ExprBinding(AST.ExpressionName(boundName)), edgeType) => s"MERGE (`$self`)-[:`$edgeType`]->(`${boundName}`)\n"
-                  //case _ => ??? // TODO: identity bindings?; otherwise, no other binding makes sense in HEAD
-                }).mkString
-              }
-            })
+              })
+          
+          (head, dependsOnSeq.toSeq, cypherBody)
         }
       })
     }).toSeq).toSeq
