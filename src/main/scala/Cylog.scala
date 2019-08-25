@@ -326,7 +326,7 @@ object Compiler {
             }
           if(!vertices.isEmpty) {
             val links = vertices.flatMap({
-              case (eName, AST.ExprBinding(AST.ExpressionName(otherVertex))) => Seq(s"(`$self`)-[:`$eName`]->(`$otherVertex`)")
+              case (eName, AST.ExprBinding(AST.ExpressionName(otherVertex))) => Seq(s"(`$self`)-[:`$name$$$eName`]->(`$otherVertex`)")
               case (eName, AST.WildcardBinding) => Seq.empty
               case _ => ??? // putting anything else for a vertex is not type-correct
             })
@@ -449,11 +449,11 @@ object Compiler {
                 case scala.collection.mutable.Seq() => "\n"
                 case scala.collection.mutable.Seq(first, rest @ _*) => {
                   val firstResult = first match {
-                    case (AST.ExprBinding(AST.ExpressionName(boundName)), edgeType) => s"-[:`$edgeType`]->(`${boundName}`)\n"
+                    case (AST.ExprBinding(AST.ExpressionName(boundName)), edgeType) => s"-[:`$head$$$edgeType`]->(`${boundName}`)\n"
                     case _ => ??? // see below for identity bindings
                   }
                   firstResult ++ rest.map({
-                    case (AST.ExprBinding(AST.ExpressionName(boundName)), edgeType) => s"MERGE (`$self`)-[:`$edgeType`]->(`${boundName}`)\n"
+                    case (AST.ExprBinding(AST.ExpressionName(boundName)), edgeType) => s"MERGE (`$self`)-[:`$head$$$edgeType`]->(`${boundName}`)\n"
                     case _ => ??? // TODO: identity bindings?; otherwise, no other binding makes sense in HEAD
                   }).mkString
                 }
