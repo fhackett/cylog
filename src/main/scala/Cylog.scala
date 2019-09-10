@@ -273,7 +273,17 @@ object Compiler {
     }
     evaluationOrderGroupCandidates += evaluationOrderCandidatesTopLevel
 
-    val evaluationOrderGroups = evaluationOrderGroupCandidates.distinct
+    val evaluationOrderGroups = {
+      // unique over all groups, .unique is not correct here
+      val uniqSet = new HashSet[String]()
+      evaluationOrderGroupCandidates.map(_.filter(candidate =>
+        if( !uniqSet(candidate) ) {
+          uniqSet += candidate
+          true
+        } else {
+          false
+        }))
+    }
 
     var freshCounter = 0
     def freshName : String = {
@@ -448,14 +458,29 @@ object Compiler {
               (mergeVertices match {
                 case scala.collection.mutable.Seq() => "\n"
                 case scala.collection.mutable.Seq(first, rest @ _*) => {
-                  val firstResult = first match {
-                    case (AST.ExprBinding(AST.ExpressionName(boundName)), edgeType) => s"-[:`$head$$$edgeType`]->(`${boundName}`)\n"
+                  val createChecks = new ArrayBuffer[String]()
+                  createChecks += self
+
+                  val r1 = freshName
+                  createChecks += r1
+                  val firstResult = (first match {
+                    case (AST.ExprBinding(AST.ExpressionName(boundName)), edgeType) => s"-[`$r1`:`$head$$$edgeType`]->(`${boundName}`)\n"
                     case _ => ??? // see below for identity bindings
-                  }
+                  }) ++ s"ON CREATE SET `$self`.`$$created` = true, `$r1`.`$$created` = true\n"
                   firstResult ++ rest.map({
-                    case (AST.ExprBinding(AST.ExpressionName(boundName)), edgeType) => s"MERGE (`$self`)-[:`$head$$$edgeType`]->(`${boundName}`)\n"
+                    case (AST.ExprBinding(AST.ExpressionName(boundName)), edgeType) => {
+                      val relName = freshName
+                      createChecks += relName
+
+                      s"MERGE (`$self`)-[`$relName`:`$head$$$edgeType`]->(`${boundName}`)\n" ++
+                      s"ON CREATE SET `$relName`.`$$created` = true\n"
+                    }
                     case _ => ??? // TODO: identity bindings?; otherwise, no other binding makes sense in HEAD
-                  }).mkString
+                  }).mkString ++
+                  s"WITH ${createChecks.map(s => s"`$s`").mkString(", ")}\n" ++
+                  s"WHERE ${createChecks.map(s => s"`$s`.`$$created`").mkString(" OR ")}\n" ++
+                  s"WITH ${createChecks.map(s => s"`$s`").mkString(", ")} LIMIT 500000\n" ++
+                  s"REMOVE ${createChecks.map(s => s"`$s`.`$$created`").mkString(", ")}\n"
                 }
               })
           

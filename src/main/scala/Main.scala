@@ -6,6 +6,8 @@ import java.nio.charset.StandardCharsets
 import scala.util.{Using,Try,Success,Failure}
 
 object Main extends App {
+
+  val TIME_UNITS = List("ns", "μs", "ms", "s")
   
   def prettyTime(base : Float, prefixes : List[String]) : String =
     prefixes match {
@@ -49,7 +51,7 @@ object Main extends App {
         val driver = use(GraphDatabase.driver("bolt://localhost:7687", AuthTokens.none()))
         val session = use(driver.session())
 
-        val t0 = System.nanoTime()
+        val queryStart = System.nanoTime()
         try {
           for(block <- blocks) {
             // this section of code computes a flipped dependency relation between Datalog facts.
@@ -74,15 +76,22 @@ object Main extends App {
             val cypherMap = new HashMap[Int,String]()
             val affects = new HashMap[Int,TreeSet[Int]]()
             val nameOf = new HashMap[Int,String]()
+            val indexOfName = new HashMap[String,Int]()
             for(((head, dependsOn, cypher), id) <- block.zipWithIndex) {
               todo += id
               cypherMap(id) = cypher
-              nameOf(id) = head
+              // generate names that make sense in context of the Datalog (i.e idx 0 is first definition, 1 is second, etc...)
+              val idx = indexOfName.getOrElseUpdate(head, 0)
+              indexOfName(head) += 1
+              nameOf(id) = s"$head@$idx"
+
               for(depName <- dependsOn if headIds.contains(depName); dep <- headIds(depName)) {
                 val affectsSet = affects.getOrElseUpdate(dep, new TreeSet[Int]())
                 affectsSet += id
               }
             }
+
+            //println(s"Affects: ${affects.map({ case (from, to) => s"${nameOf(from)}: ${to.map(nameOf).mkString(", ")}"}).mkString("\n- ")}")
 
             val isTodo = new HashSet[Int]()
             isTodo ++= todo
@@ -95,19 +104,30 @@ object Main extends App {
               isTodo -= id
               val cypher = cypherMap(id)
 
-              val innert0 = System.nanoTime()
-              val result = session.run(cypher, TransactionConfig.empty())
-              val summary = result.consume()
-              val innert1 = System.nanoTime()
+              var shouldSchedule = false
+              var wasProductive = false
 
-              val counters = summary.counters()
-              // This is useful for huge queries, so you can see sort of what Cylog is doing by reading the console.
-              // Also helps in telling the difference between the DB being stuck on a huge query vs. Cylog iterating
-              println(s"Fragment ${nameOf(id)}@$id completed in ${prettyTime(innert1-innert0, List("ns", "μs", "ms", "s"))}. Created ${counters.nodesCreated()} nodes, ${counters.relationshipsCreated()} edges.")
+              println(s"Running fragment ${nameOf(id)}...")
 
-              if( counters.nodesCreated() + counters.relationshipsCreated() > 0 ){
+              val fragmentStart = System.nanoTime()
+              do {
+                val blockStart = System.nanoTime()
+                val result = session.run(cypher, TransactionConfig.empty())
+                val summary = result.consume()
+                val blockEnd = System.nanoTime()
+                val counters = summary.counters()
+                wasProductive = counters.nodesCreated() + counters.relationshipsCreated() > 0
+                shouldSchedule |= wasProductive
+
+                println(s"Block of ${nameOf(id)} generated ${counters.nodesCreated()} nodes and ${counters.relationshipsCreated()} edges, took ${prettyTime(blockEnd-blockStart, TIME_UNITS)}.")
+              } while( wasProductive ) 
+              val fragmentEnd = System.nanoTime()
+
+              println(s"Fragment ${nameOf(id)} took ${prettyTime(fragmentEnd-fragmentStart, TIME_UNITS)}.")
+
+              if( shouldSchedule && affects.contains(id) ){
                 for(affected <- affects(id) if !isTodo(affected)) {
-                  println(s"Scheduling rerun: ${nameOf(affected)}@$affected")
+                  println(s"Scheduling affected fragment: ${nameOf(affected)}.")
                   todo += affected
                   isTodo += affected
                 }
@@ -115,8 +135,8 @@ object Main extends App {
             }
           }
         } finally {
-          val t1 = System.nanoTime()
-          println(s"Execution time: ${prettyTime(t1-t0, List("ns", "μs", "ms", "s"))}")
+          val queryEnd = System.nanoTime()
+          println(s"Execution time: ${prettyTime(queryEnd-queryStart, TIME_UNITS)}")
         }
       } match {
         case Success(()) => {
@@ -125,6 +145,7 @@ object Main extends App {
         }
         case Failure(e) => {
           println(s"Aborting, error executing query: ${e.getMessage}")
+          e.printStackTrace()
           sys.exit(1)
         }
       }
